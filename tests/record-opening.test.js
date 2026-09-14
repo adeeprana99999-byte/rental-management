@@ -37,13 +37,14 @@ function frontend(data) {
     setTimeout: () => 0, clearTimeout() {}, alert: message => { throw new Error(message); }
   });
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn }; })();'), context);
+  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract }; })();'), context);
   return {
     app,
     saveVehicle: context.testApp.saveVehicle,
     saveCustomer: context.testApp.saveCustomer,
     saveVehicleChange: context.testApp.saveVehicleChange,
     saveRentalReturn: context.testApp.saveRentalReturn,
+    saveContract: context.testApp.saveContract,
     savedData: () => JSON.parse(cache.get('rental_management_real_app_v1')),
     click(dataset) {
       // The delegated click handler must also work when a child inside the row is clicked.
@@ -65,6 +66,55 @@ function assignmentData() {
   data.payments = [{ id: 'payment', rentalId: 'rental', customerId: 'customer', vehicleId: 'old', amount: 400 }];
   return data;
 }
+
+function contractInput(extra = {}) {
+  return { rentalId: 'rental', previousVehicleId: 'old', vehicleId: 'old', name: 'Updated renter', phone: '5551234567', email: 'new@example.test', address: 'New address', license: 'UPDATED-LICENSE', unit: 'UPDATED-CAR', make: 'Toyota', model: 'Corolla', plate: 'NEWPLATE', vin: 'VIN-123', mileage: '150', returnMileage: '150', startDate: '2026-01-01', endDate: '2026-12-31', monthlyRate: '1200', deposit: '250', status: 'active', notes: 'Updated contract', ...extra };
+}
+
+test('one contract save updates linked customer, fleet, rental and balance without replacing history', async () => {
+  const data = assignmentData();
+  data.rentals.push({ ...data.rentals[0], id: 'other', vehicleId: 'elsewhere', status: 'reserved' });
+  data.documents = [{ id: 'doc', ownerType: 'rental', ownerId: 'rental', fileName: 'original.pdf' }];
+  data.vehicles[0].acquisitionCost = 19000;
+  const page = frontend(data);
+  page.click({ action: 'edit-contract', id: 'rental' });
+  assert.match(page.app.innerHTML, /Save entire contract/);
+  await page.saveContract(contractInput());
+  const saved = page.savedData();
+  assert.equal(saved.customers[0].name, 'Updated renter');
+  assert.equal(saved.customers[0].license, 'UPDATED-LICENSE');
+  assert.equal(saved.vehicles[0].unit, 'UPDATED-CAR');
+  assert.equal(saved.vehicles[0].acquisitionCost, 19000);
+  assert.equal(saved.rentals[0].monthlyRate, 1200);
+  assert.equal(saved.rentals[1].driverName, 'Updated renter');
+  assert.equal(saved.payments[0].amount, 400);
+  assert.equal(saved.documents[0].ownerId, 'rental');
+  const reloaded = frontend(saved);
+  reloaded.click({ action: 'select-rental', id: 'rental' });
+  assert.match(reloaded.app.innerHTML, /Updated renter/);
+  assert.match(reloaded.app.innerHTML, /UPDATED-CAR/);
+  assert.equal(server.sanitizeCustomerRental(saved.rentals[0], saved.payments).settlement.received, 400);
+});
+
+test('invalid contract edits leave every record unchanged', async () => {
+  for (const invalid of [{ endDate: '2025-01-01' }, { monthlyRate: '-1' }, { mileage: '50' }, { previousVehicleId: 'stale' }, { status: 'closed' }, { vehicleId: 'new', unit: 'NEW', mileage: '100', returnMileage: '50' }]) {
+    const page = frontend(assignmentData());
+    const before = page.savedData();
+    await assert.rejects(page.saveContract(contractInput(invalid)));
+    assert.deepEqual(page.savedData(), before);
+  }
+});
+
+test('contract vehicle swap keeps payment attribution and releases previous car', async () => {
+  const page = frontend(assignmentData());
+  await page.saveContract(contractInput({ vehicleId: 'new', unit: 'NEW', mileage: '100' }));
+  const saved = page.savedData();
+  assert.equal(saved.rentals[0].vehicleId, 'new');
+  assert.equal(saved.vehicles[0].status, 'available');
+  assert.equal(saved.vehicles[1].status, 'rented');
+  assert.equal(saved.payments[0].vehicleId, 'old');
+  assert.equal(saved.rentals[0].vehicleChanges.length, 1);
+});
 
 test('vehicle change preserves the contract, linked payment and old vehicle history after reload', () => {
   const data = assignmentData();
