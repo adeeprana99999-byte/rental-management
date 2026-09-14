@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Rental Management">
+  <defs>
+    <linearGradient id="bg" x1="62" y1="46" x2="450" y2="472" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#061525"/>
+      <stop offset=".46" stop-color="#0f6fb5"/>
+      <stop offset="1" stop-color="#13a58d"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="152" y1="134" x2="370" y2="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f8d36a"/>
+      <stop offset="1" stop-color="#35d0ba"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <path d="M116 293h280l-27-80c-9-26-28-39-57-39H200c-29 0-48 13-57 39l-27 80Z" fill="#fff"/>
+  <path d="M164 282l21-54c4-10 12-15 24-15h94c12 0 20 5 24 15l21 54H164Z" fill="#0a3858"/>
+  <path d="M133 292h246c20 0 36 16 36 36v31c0 11-9 20-20 20h-28c-8 0-15-5-18-12l-6-15H169l-6 15c-3 7-10 12-18 12h-28c-11 0-20-9-20-20v-31c0-20 16-36 36-36Z" fill="url(#accent)"/>
+  <circle cx="162" cy="341" r="24" fill="#061525"/>
+  <circle cx="350" cy="341" r="24" fill="#061525"/>
+  <path d="M214 336h84" stroke="#061525" stroke-width="20" stroke-linecap="round"/>
+</svg>
