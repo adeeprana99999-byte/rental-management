@@ -3051,6 +3051,61 @@ body, .app-shell, .login-page, .customer-shell { min-height: 100dvh; }
 .file-choice:focus-within { outline: 3px solid #2387d4; }
 .file-status, .return-settlement { overflow-wrap: anywhere; line-height: 1.5; }
 .return-settlement { margin: 16px 0; padding: 14px; border: 1px solid #cbd8e2; border-radius: 12px; }
+/* Use the same action colors in profiles and their action menus. */
+button[data-action="edit-contract"],
+button[data-action="edit-customer"],
+button[data-action="edit-vehicle"] { --action-color: linear-gradient(135deg, #f4b942, #35d0ba); --action-hover: linear-gradient(135deg, #e9ad32, #29bca8); }
+button[data-action="change-vehicle"] { --action-color: #d7f4ed; --action-hover: #bdeadd; }
+button[data-action="close-rental"] { --action-color: #ffedc2; --action-hover: #ffe1a0; }
+button:is([data-action="edit-contract"], [data-action="edit-customer"], [data-action="edit-vehicle"], [data-action="change-vehicle"], [data-action="close-rental"]) {
+  color: #123b3b;
+  background: var(--action-color);
+  border: 1px solid #a5cdc3;
+  box-shadow: none;
+  padding: 10px 14px;
+  min-height: 44px;
+}
+button:is([data-action="edit-contract"], [data-action="edit-customer"], [data-action="edit-vehicle"], [data-action="change-vehicle"], [data-action="close-rental"]):hover {
+  background: var(--action-hover);
+  border-color: #538e80;
+}
+button:is([data-action="edit-contract"], [data-action="edit-customer"], [data-action="edit-vehicle"], [data-action="change-vehicle"], [data-action="close-rental"]):focus-visible {
+  outline: 3px solid #101923;
+  outline-offset: 3px;
+}
+.profile-header .profile-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(100%, 456px);
+  gap: 8px;
+  align-items: center;
+}
+.profile-header .profile-actions > :not(button):not(.context-actions) {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.profile-header .profile-actions > button,
+.profile-header .profile-actions > .context-actions,
+.profile-header .profile-actions > .context-actions > button {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+.profile-header .profile-actions > button,
+.profile-header .profile-actions > .context-actions > button {
+  height: 44px;
+  min-height: 44px;
+  padding: 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+  box-shadow: none;
+}
+.profile-header .profile-actions .context-menu { top: calc(100% + 6px); }
+@media (max-width: 860px) {
+  .profile-header .profile-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+}
 .modal { max-height: calc(100dvh - 40px); overscroll-behavior: contain; }
 @media (max-width: 860px) {
   input, select, textarea { min-width: 0; max-width: 100%; font-size: 16px !important; }
