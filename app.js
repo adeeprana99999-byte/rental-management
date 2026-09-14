@@ -1169,6 +1169,7 @@
         <div class="profile-actions">
           ${statusBadge(vehicle.status)}
           <button class="soft-btn" data-action="edit-vehicle" data-id="${esc(vehicle.id)}">Edit vehicle</button>
+          ${rental ? `<button class="soft-btn" data-action="change-vehicle" data-id="${esc(rental.id)}">Change vehicle</button>` : vehicle.status === "available" ? `<button class="primary-add" data-action="open-add" data-type="rental" data-vehicle-id="${esc(vehicle.id)}">Assign to customer</button>` : ""}
           ${contextActionMenu(`vehicle-${vehicle.id}`, [
             rental
               ? { label: "Record payment", type: "payment", vehicleId: vehicle.id, rentalId: rental.id, customerId: rental.customerId }
@@ -1327,6 +1328,8 @@
         <div class="profile-actions">
           ${statusBadge(customer.status)}
           <button class="soft-btn" data-action="edit-customer" data-id="${esc(customer.id)}">Edit customer</button>
+          <button class="primary-add" data-action="open-add" data-type="rental" data-customer-id="${esc(customer.id)}">Assign vehicle</button>
+          ${active ? `<button class="soft-btn" data-action="change-vehicle" data-id="${esc(active.id)}">Change vehicle</button>` : ""}
           ${contextActionMenu(`customer-${customer.id}`, [
             { label: "Add rental", type: "rental", customerId: customer.id },
             active ? { label: "Record payment", type: "payment", rentalId: active.id, vehicleId: active.vehicleId, customerId: customer.id } : { label: "Add driver license", type: "document", ownerType: "customer", ownerId: customer.id, documentType: "Driver license" },
@@ -1498,6 +1501,7 @@
           </div>
           <div class="profile-actions">
             ${statusBadge(rental.status)}
+            ${rental.status === "active" ? `<button class="soft-btn" data-action="change-vehicle" data-id="${esc(rental.id)}">Change vehicle</button>` : ""}
             ${rental.status !== "closed" ? `<button class="primary-add" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button>` : ""}
             ${contextActionMenu(`rental-${rental.id}`, [
               balance > 0 ? { label: "Record payment", type: "payment", rentalId: rental.id, vehicleId: rental.vehicleId, customerId: rental.customerId } : null,
@@ -1530,6 +1534,7 @@
           ${detail("Insurance expiry", rental.insuranceExpiry ? shortDate(rental.insuranceExpiry) : "Not saved")}
           ${detail("Notes", rental.notes || "No notes")}
         </section>
+        ${(rental.vehicleChanges || []).length ? `<section class="simple-section embedded"><h3>Vehicle change history</h3>${rental.vehicleChanges.map(change => `<p>${esc(shortDate(change.date))}: ${esc(change.fromLabel)} → ${esc(change.toLabel)}. Return mileage: ${number(change.returnMileage)}. ${esc(change.notes || "")}</p>`).join("")}</section>` : ""}
         <section class="simple-section embedded">
           <div class="simple-head"><div><h3>Rental files</h3><p>${number(documentsFor("rental", rental.id).length)} files linked to this rental</p></div><button class="soft-btn" data-action="open-add" data-type="document" data-owner-type="rental" data-owner-id="${esc(rental.id)}">Add file</button></div>
           ${renderDocumentList(documentsFor("rental", rental.id))}
@@ -1798,6 +1803,7 @@
   }
 
   function recordTypeLabel(value) {
+    if (value === 'change-vehicle') return 'Change vehicle';
     if (value === 'return') return 'Return vehicle';
     return value === "customer" ? "Customer" : tabLabel(value);
   }
@@ -1829,6 +1835,7 @@
   }
 
   function renderForm(type) {
+    if (type === "change-vehicle") return changeVehicleForm();
     if (type === "return") return returnRentalForm();
     if (type === "vehicle") return vehicleForm();
     if (type === "customer") return customerForm();
@@ -1907,6 +1914,56 @@
     return '<h3>Final settlement</h3><p>Rent through ' + esc(date) + ', including the return day: <b>' + money(value.rentCharged) + '</b></p><p>Contract deposit: ' + money(value.deposit) + ' · Received: ' + money(value.received) + '</p><p><b>Amount due from customer: ' + money(value.due) + '</b></p><p>Credit above contract: ' + money(value.credit) + '</p><p>Maintenance and business expenses are excluded. Deposit refunds are settled separately. The car becomes available unless another active rental or service requires it.</p>';
   }
 
+  function replacementVehicles(rental) {
+    const date = todayKey();
+    const end = rental.endDate > date ? rental.endDate : date;
+    return db.vehicles.filter(vehicle => vehicle.id !== rental.vehicleId && vehicle.status === "available"
+      && !db.maintenance.some(item => item.vehicleId === vehicle.id && ["scheduled", "in_progress", "pending_payment"].includes(item.status))
+      && !db.rentals.some(other => other.id !== rental.id && other.vehicleId === vehicle.id && other.status !== "closed"
+        && (other.status === "active" || rangesOverlap(date, end, other.startDate, other.endDate))));
+  }
+
+  function changeVehicleForm() {
+    const rental = rentalById(ui.prefill.rentalId);
+    if (!rental || rental.status !== "active") return "";
+    const vehicle = vehicleById(rental.vehicleId);
+    const choices = replacementVehicles(rental);
+    return `<form data-form="change-vehicle" class="record-form">
+      ${hiddenField("rentalId", rental.id)}${hiddenField("previousVehicleId", rental.vehicleId)}
+      <div class="form-grid">
+        ${lockedContext("Customer", customerById(rental.customerId)?.name || rental.driverName)}
+        ${lockedContext("Current vehicle", vehicle ? vehicleLine(vehicle) : rental.vehicleId)}
+        <div class="form-note wide"><b>Change effective ${esc(shortDate(todayKey()))}</b><span>The rental continues with the same dates, monthly rate, deposit and payments. The old car is released and the replacement is assigned to this customer.</span></div>
+        ${choices.length ? selectField("Replacement vehicle", "vehicleId", choices.map(item => ({ value: item.id, label: vehicleLine(item) })), choices[0].id) : '<p class="wide" role="status">No available replacement vehicles. Check Fleet availability or return another rental first.</p>'}
+        ${field("Old vehicle return mileage", "returnMileage", String(vehicle?.mileage || 0), "number", true)}
+        ${textarea("Reason / notes", "notes", "")}
+      </div><footer><button type="button" class="soft-btn" data-action="close-modal">Cancel</button><button class="primary-add" ${choices.length ? "" : "disabled"}>Confirm vehicle change</button></footer>
+    </form>`;
+  }
+
+  function saveVehicleChange(data) {
+    const rental = rentalById(data.rentalId);
+    if (auth?.role !== "staff" || !rental || rental.status !== "active") return;
+    if (rental.vehicleId !== data.previousVehicleId) { alert("This rental's vehicle has changed. Reopen Change vehicle and try again."); return; }
+    if (rental.startDate > todayKey()) { alert("The rental has not started yet. Change the assignment after its start date."); return; }
+    const replacement = replacementVehicles(rental).find(vehicle => vehicle.id === data.vehicleId);
+    if (!replacement) { alert("That vehicle is no longer available. Choose another replacement."); return; }
+    const previous = vehicleById(rental.vehicleId);
+    const mileage = Number(data.returnMileage);
+    if (String(data.returnMileage ?? "").trim() === "" || !Number.isFinite(mileage) || mileage < Number(previous?.mileage || 0)) { alert("Return mileage cannot be less than the current recorded mileage."); return; }
+    const change = { date: todayKey(), fromVehicleId: rental.vehicleId, toVehicleId: replacement.id,
+      fromLabel: previous ? vehicleLine(previous) : rental.vehicleId, toLabel: vehicleLine(replacement),
+      returnMileage: mileage, notes: String(data.notes || "").trim() };
+    rental.vehicleChanges = [...(rental.vehicleChanges || []), change];
+    rental.vehicleId = replacement.id;
+    if (previous) previous.mileage = mileage;
+    syncVehicle(change.fromVehicleId);
+    syncVehicle(replacement.id);
+    ui.view = "rentals"; ui.rentalId = rental.id; ui.rentalMode = "profile"; ui.vehicleId = replacement.id;
+    addActivity("rental", `${change.fromLabel} changed to ${change.toLabel}.`, "rental", rental.id, { rentalId: rental.id, vehicleId: replacement.id, customerId: rental.customerId });
+    commit("Vehicle changed. Rental terms and payments preserved.");
+  }
+
   function returnRentalForm() {
     const rental = rentalById(ui.prefill.rentalId);
     if (!rental) return '';
@@ -1917,6 +1974,8 @@
   function saveRentalReturn(data) {
     const rental = rentalById(data.rentalId);
     if (auth?.role !== 'staff' || !rental || rental.status === 'closed') return;
+    const lastChange = rental.vehicleChanges?.at(-1);
+    if (lastChange && data.returnDate < lastChange.date) { alert('Return date cannot be before the last vehicle change.'); return; }
     if (!RentalMath.date(data.returnDate) || data.returnDate < rental.startDate || data.returnDate > todayKey()) { alert('Choose a return date between the rental start date and today.'); return; }
     const vehicle = vehicleById(rental.vehicleId), mileage = Number(data.returnMileage);
     if (!Number.isFinite(mileage) || mileage < Number(vehicle?.mileage || 0)) { alert('Return mileage cannot be less than the current recorded mileage.'); return; }
@@ -2001,7 +2060,7 @@
     const lockedVehicle = prefill.vehicleId ? vehicleById(prefill.vehicleId) : null;
     const selectedCustomer = customerById(prefill.customerId || "");
     return `<form data-form="rental" class="record-form"><div class="form-grid">
-      ${hiddenField("customerId", selectedCustomer?.id || "")}
+      ${selectField("Assign to customer", "customerId", [{ value: "", label: "New customer — enter details below" }, ...db.customers.map(customer => ({ value: customer.id, label: `${customer.name} / ${customer.phone || customer.email || customer.id}` }))], selectedCustomer?.id || "")}
       ${lockedVehicle ? hiddenField("vehicleId", lockedVehicle.id) + lockedContext("Rental for this car", vehicleLine(lockedVehicle)) : rentalVehicleOptions(prefill.vehicleId || ui.vehicleId)}
       ${field("Start date", "startDate", todayKey(), "date", true)}
       ${field("Return date", "endDate", addDays(7), "date", true)}
@@ -2009,7 +2068,7 @@
       ${field("Deposit", "deposit", "300", "number", false, "0.01")}
       ${selectField("Status", "status", ["reserved", "active"], "active")}
       ${field("Pickup location", "pickupLocation", db.settings.location, "text")}
-      <div class="form-note wide"><b>Customer details</b><span>Enter these at the desk. The customer profile is created automatically when the rental is saved.</span></div>
+      <div class="form-note wide"><b>Customer details</b><span>Choose an existing customer above or enter a new customer below. This creates a new rental; use Change vehicle on an active rental to swap cars.</span></div>
       ${field("Customer name", "driverName", selectedCustomer?.name || "", "text", true)}
       ${field("Phone", "driverPhone", selectedCustomer?.phone || "", "tel", true)}
       ${field("Email", "customerEmail", selectedCustomer?.email || "", "email")}
@@ -2140,6 +2199,7 @@
       return;
     }
     if (type === "return") return saveRentalReturn(data);
+    if (type === "change-vehicle") return saveVehicleChange(data);
     if (type === "vehicle") return saveVehicle(data);
     if (type === "customer") return saveCustomer(data);
     if (type === "rental") return saveRental(data);
@@ -2711,6 +2771,12 @@
 
   function handleAction(button) {
     const action = button.dataset.action;
+    if (action === "change-vehicle") {
+      if (auth?.role !== "staff" || rentalById(button.dataset.id)?.status !== "active") return;
+      ui.modal = "change-vehicle"; ui.prefill = { rentalId: button.dataset.id }; ui.actionMenu = ""; ui.addMenu = false;
+      render();
+      return;
+    }
     if (action === "toggle-add") {
       ui.addMenu = !ui.addMenu;
       ui.actionMenu = "";
@@ -2997,6 +3063,13 @@
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target.matches('[data-form="rental"] select[name="customerId"]')) {
+      const form = event.target.closest("form");
+      const customer = customerById(event.target.value);
+      const values = { driverName: customer?.name, driverPhone: customer?.phone, customerEmail: customer?.email, customerAddress: customer?.address, licenseNumber: customer?.license };
+      for (const [name, value] of Object.entries(values)) form.elements[name].value = value || "";
+      return;
+    }
     if (event.target.matches("[data-file-name]")) { const box = event.target.closest(".file-capture"); const file = event.target.files[0]; if (file) { box.selectedFile = file; box.querySelector(".file-status").textContent = "Selected: " + file.name + ". Save to attach."; } return; }
     if (event.target.matches("[data-finance-month]")) { ui.financeMonth = event.target.value; render(); return; }
     if (event.target.matches('select[name="ownerType"]')) {

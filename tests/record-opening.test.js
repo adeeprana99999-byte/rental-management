@@ -37,11 +37,13 @@ function frontend(data) {
     setTimeout: () => 0, clearTimeout() {}, alert: message => { throw new Error(message); }
   });
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicle, saveCustomer }; })();'), context);
+  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn }; })();'), context);
   return {
     app,
     saveVehicle: context.testApp.saveVehicle,
     saveCustomer: context.testApp.saveCustomer,
+    saveVehicleChange: context.testApp.saveVehicleChange,
+    saveRentalReturn: context.testApp.saveRentalReturn,
     savedData: () => JSON.parse(cache.get('rental_management_real_app_v1')),
     click(dataset) {
       // The delegated click handler must also work when a child inside the row is clicked.
@@ -55,6 +57,62 @@ const normal = { _id: 'veh_regular', id: 'veh_regular', unit: 'NORMAL-01', make:
 function dataset(vehicles) {
   return { vehicles, customers: [], rentals: [], payments: [], expenses: [], maintenance: [], inspections: [], documents: [], activity: [] };
 }
+
+function assignmentData() {
+  const data = dataset([{ id: 'old', unit: 'OLD', status: 'rented', mileage: 100 }, { id: 'new', unit: 'NEW', status: 'available', mileage: 20 }]);
+  data.customers = [{ id: 'customer', name: 'Existing customer', status: 'active' }];
+  data.rentals = [{ id: 'rental', vehicleId: 'old', customerId: 'customer', status: 'active', startDate: '2026-01-01', endDate: '2099-12-31', monthlyRate: 900, deposit: 300 }];
+  data.payments = [{ id: 'payment', rentalId: 'rental', customerId: 'customer', vehicleId: 'old', amount: 400 }];
+  return data;
+}
+
+test('vehicle change preserves the contract, linked payment and old vehicle history after reload', () => {
+  const data = assignmentData();
+  const page = frontend(data);
+  page.click({ action: 'select-customer', id: 'customer' });
+  assert.match(page.app.innerHTML, />Assign vehicle</);
+  assert.match(page.app.innerHTML, />Change vehicle</);
+  page.click({ action: 'change-vehicle', id: 'rental' });
+  assert.match(page.app.innerHTML, /Replacement vehicle/);
+  page.saveVehicleChange({ rentalId: 'rental', previousVehicleId: 'old', vehicleId: 'new', returnMileage: 150, notes: 'Swap for service' });
+  const saved = page.savedData();
+  assert.equal(saved.rentals[0].vehicleId, 'new');
+  for (const key of ['id', 'customerId', 'monthlyRate', 'deposit', 'startDate', 'endDate', 'status']) assert.equal(saved.rentals[0][key], data.rentals[0][key]);
+  assert.equal(saved.payments[0].vehicleId, 'old');
+  assert.equal(saved.payments[0].amount, 400);
+  assert.equal(saved.vehicles[0].status, 'available');
+  assert.equal(saved.vehicles[0].mileage, 150);
+  assert.equal(saved.vehicles[1].status, 'rented');
+  assert.equal(saved.rentals[0].vehicleChanges[0].fromVehicleId, 'old');
+  const reloaded = frontend(saved);
+  reloaded.click({ action: 'select-rental', id: 'rental' });
+  assert.match(reloaded.app.innerHTML, /Vehicle change history/);
+  assert.match(reloaded.app.innerHTML, /Swap for service/);
+  assert.throws(() => reloaded.saveRentalReturn({ rentalId: 'rental', returnDate: '2026-01-01', returnMileage: 200 }), /before the last vehicle change/);
+});
+
+test('replacement rejects reserved, occupied, maintenance and stale choices without changing records', () => {
+  for (const kind of ['reserved', 'active', 'maintenance', 'stale', 'mileage']) {
+    const data = assignmentData();
+    if (kind === 'reserved' || kind === 'active') data.rentals.push({ id: 'conflict', vehicleId: 'new', customerId: 'other', status: kind, startDate: '2026-01-01', endDate: '2099-12-31' });
+    if (kind === 'maintenance') data.maintenance.push({ id: 'service', vehicleId: 'new', status: 'scheduled' });
+    const page = frontend(data);
+    assert.throws(() => page.saveVehicleChange({ rentalId: 'rental', previousVehicleId: kind === 'stale' ? 'outdated' : 'old', vehicleId: 'new', returnMileage: kind === 'mileage' ? 99 : 150 }));
+    assert.equal(page.savedData().rentals[0].vehicleId, 'old');
+    assert.equal(page.savedData().payments[0].amount, 400);
+  }
+});
+
+test('released car stays in maintenance and unavailable replacements show a clear empty state', () => {
+  const data = assignmentData();
+  data.maintenance = [{ id: 'service', vehicleId: 'old', status: 'in_progress' }];
+  const page = frontend(data);
+  page.saveVehicleChange({ rentalId: 'rental', previousVehicleId: 'old', vehicleId: 'new', returnMileage: 150 });
+  assert.equal(page.savedData().vehicles[0].status, 'maintenance');
+  page.click({ action: 'change-vehicle', id: 'rental' });
+  assert.match(page.app.innerHTML, /No available replacement vehicles/);
+  assert.match(page.app.innerHTML, /disabled>Confirm vehicle change/);
+});
 
 test('database mapping preserves imported identity, labels, and string reference types', () => {
   const mapped = clean(imported);

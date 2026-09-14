@@ -1,4 +1,4 @@
-const CACHE_NAME = "rental-management-shell-v2-rent-returns";
+const CACHE_NAME = "rental-management-shell-v3-vehicle-assignment";
 const APP_SHELL = [
   "/",
   "/index.html",
