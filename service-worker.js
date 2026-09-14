@@ -1,4 +1,4 @@
-const CACHE_NAME = "rental-management-shell-v5-action-colors";
+const CACHE_NAME = "rental-management-shell-v6-monthly-due";
 const APP_SHELL = [
   "/",
   "/index.html",

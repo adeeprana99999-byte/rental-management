@@ -483,6 +483,14 @@
     return RentalMath.summary(rental, db.payments).due;
   }
 
+  function contractBillingDetails(rental) {
+    const billing = RentalMath.summary(rental, db.payments);
+    return detail("Monthly due date", `Start date, then day ${Number(rental.startDate?.slice(8))} each month (last day for shorter months)`)
+      + detail("Next payment", billing.nextDueDate ? `${shortDate(billing.nextDueDate)} · ${money(billing.nextAmount)}` : "No further scheduled rent payments")
+      + detail("Future rent — not due yet", money(billing.futureRent))
+      + detail("Remaining contract balance (including future rent)", money(billing.remainingBalance));
+  }
+
   function vehicleRevenue(vehicleId) {
     return db.payments
       .filter((payment) => payment.vehicleId === vehicleId)
@@ -907,7 +915,7 @@
             </div>
             ${statusBadge(rental.status)}
           </section>
-          ${rental.settlement ? `<section class="customer-info-card"><h3>My rental balance</h3><p>Rent: ${money(rental.settlement.rentCharged)} · Contract deposit: ${money(rental.settlement.deposit)} · Received: ${money(rental.settlement.received)}</p><b>Amount due: ${money(rental.settlement.due)}</b><p>Credit above contract: ${money(rental.settlement.credit)}. Maintenance and business expenses are excluded. Deposit refunds are settled separately.</p>${rental.returnDate ? `<p>Returned ${shortDate(rental.returnDate)}</p>` : ""}</section>` : ""}
+          ${rental.settlement ? `<section class="customer-info-card"><h3>My rental balance</h3><p>Rent: ${money(rental.settlement.rentCharged)} · Contract deposit: ${money(rental.settlement.deposit)} · Received: ${money(rental.settlement.received)}</p><b>Due today: ${money(rental.settlement.due)}</b><p>Future rent (not yet due): ${money(rental.settlement.futureRent || 0)}. ${rental.settlement.nextDueDate ? `Next payment: ${shortDate(rental.settlement.nextDueDate)} · ${money(rental.settlement.nextAmount)}` : "No further scheduled rent payments."}</p><p>Credit above contract: ${money(rental.settlement.credit)}. Maintenance and business expenses are excluded. Deposit refunds are settled separately.</p>${rental.returnDate ? `<p>Returned ${shortDate(rental.returnDate)}</p>` : ""}</section>` : ""}
           <section class="customer-grid">
             <article class="customer-info-card">
               <small>Rental</small>
@@ -1519,13 +1527,13 @@
         <section class="profile-grid rental-summary-grid">
           <article class="profile-card"><small>Contract</small><h3>${money(rentalTotal(rental))}</h3><p>${number(daysBetween(rental.startDate, rental.returnDate || rental.endDate))} days / ${money(rentalMonthlyRate(rental))} monthly plus ${money(rental.deposit)} deposit</p></article>
           <article class="profile-card"><small>Received</small><h3>${money(rentalPaid(rental.id))}</h3><p>${number(payments.length)} payments recorded</p></article>
-          <article class="profile-card"><small>Balance</small><h3 class="${balance ? "text-danger" : "text-success"}">${money(balance)}</h3><p>${balance ? "Unpaid contract balance remains collectible after return" : "Paid up"}. Maintenance is excluded.</p></article>
+          <article class="profile-card"><small>Due today</small><h3 class="${balance ? "text-danger" : "text-success"}">${money(balance)}</h3><p>${rental.returnDate ? "Final prorated balance after return." : "Only installments due by today, plus the deposit, less payments."} Maintenance is excluded.</p></article>
           <article class="profile-card"><small>Checks</small><h3>${number(inspections.length)}</h3><p>${number(expenses.length)} linked expenses</p></article>
         </section>
         <section class="detail-grid">
           ${detail("Pickup", rental.pickupLocation)}
           ${detail("Status", rental.returnDate ? "Returned" : rental.status)}
-          ${detail("Actual return date", rental.returnDate || "Not returned")}
+          ${detail("Actual return date", rental.returnDate || "Not returned")}${contractBillingDetails(rental)}
           ${detail("Credit above contract", money(RentalMath.summary(rental, db.payments).credit))}
           ${detail("Vehicle", vehicle ? vehicle.unit + " - " + vehicle.make + " " + vehicle.model : "Not assigned")}
           ${detail("Customer", customer?.name || "Not assigned")}

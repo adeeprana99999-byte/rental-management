@@ -20,14 +20,45 @@
     }
     return round(total);
   }
-  function summary(rental, payments) {
-    const rentCharged = rent(rental), deposit = Number(rental.deposit || 0);
-    const received = round(payments.filter(p => String(p.rentalId) === String(rental.id)).reduce((sum, p) => sum + Number(p.amount || 0), 0));
-    // Preserve the existing contract's separate deposit obligation. Never mix in business costs.
-    const total = round(rentCharged + deposit);
-    return { rentCharged, deposit, total, received, due: round(Math.max(0, total - received)), credit: round(Math.max(0, received - total)) };
+  function today() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   }
-  const api = { round, date, days, rent, summary };
+  function schedule(rental) {
+    const start = date(rental.startDate), end = date(rental.returnDate || rental.endDate);
+    if (!start || !end || end < start) return [];
+    const rate = Number(rental.monthlyRate || 0) || Number(rental.dailyRate || 0) * 30;
+    // Anchor every installment to the original start day, so February never shifts later due dates.
+    const anniversary = offset => {
+      const month = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + offset, 1));
+      const lastDay = new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 0)).getUTCDate();
+      return new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth(), Math.min(start.getUTCDate(), lastDay)));
+    };
+    const rows = [];
+    for (let index = 0, from = start; from <= end; from = anniversary(++index)) {
+      const next = anniversary(index + 1);
+      const to = new Date(Math.min(+end, +next - 86400000));
+      rows.push({ dueDate: from.toISOString().slice(0, 10), through: to.toISOString().slice(0, 10), amount: round(rate * ((+to - +from) / 86400000 + 1) / ((+next - +from) / 86400000)) });
+    }
+    return rows;
+  }
+  function summary(rental, payments, asOf = today()) {
+    const installments = schedule(rental), deposit = Number(rental.deposit || 0);
+    const rentCharged = round(installments.reduce((sum, row) => sum + row.amount, 0));
+    const received = round(payments.filter(p => String(p.rentalId) === String(rental.id) && (!p.date || p.date <= asOf)).reduce((sum, p) => sum + Number(p.amount || 0), 0));
+    const rentDue = round(installments.filter(row => row.dueDate <= asOf).reduce((sum, row) => sum + row.amount, 0));
+    const total = round(rentCharged + deposit);
+    const billed = round(rentDue + (rental.startDate <= asOf ? deposit : 0));
+    let allocated = Math.max(0, received - deposit), nextDueDate = null, nextAmount = 0;
+    for (const row of installments) {
+      const unpaid = round(Math.max(0, row.amount - allocated));
+      allocated = Math.max(0, allocated - row.amount);
+      const depositUnpaid = row.dueDate === rental.startDate && row.dueDate > asOf ? Math.max(0, deposit - received) : 0;
+      if (row.dueDate > asOf && unpaid + depositUnpaid > 0) { nextDueDate = row.dueDate; nextAmount = round(unpaid + depositUnpaid); break; }
+    }
+    return { rentCharged, deposit, total, received, due: round(Math.max(0, billed - received)), credit: round(Math.max(0, received - total)), rentDue, futureRent: round(rentCharged - rentDue), remainingBalance: round(Math.max(0, total - received)), nextDueDate, nextAmount };
+  }
+  const api = { round, date, days, rent, schedule, summary };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.RentalMath = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
