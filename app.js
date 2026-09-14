@@ -559,7 +559,7 @@
           id: "balance_" + rental.id,
           tone: rental.endDate < todayKey() ? "danger" : "warning",
           title: "Open rental balance",
-          meta: `${customer?.name || "Customer"} / ${vehicle?.unit || "Vehicle"} / ${shortDate(rental.endDate)}`,
+          meta: `${customer?.name || "Customer"} / ${vehicle?.unit || "Vehicle"} / ${shortDate(rental.returnDate || rental.endDate)}`,
           value: money(balance),
           view: "rentals",
           rentalId: rental.id,
@@ -572,7 +572,7 @@
           id: "return_" + rental.id,
           tone: "notice",
           title: "Return coming up",
-          meta: `${vehicle?.unit || "Vehicle"} due ${shortDate(rental.endDate)}`,
+          meta: `${vehicle?.unit || "Vehicle"} due ${shortDate(rental.returnDate || rental.endDate)}`,
           value: customer?.name || "Customer",
           view: "fleet",
           vehicleId: rental.vehicleId,
@@ -913,13 +913,13 @@
               <h2>${esc(vehicle.unit)} / ${esc(vehicle.make)} ${esc(vehicle.model)}</h2>
               <p>${esc(vehicle.year)} / ${esc(vehicle.plate)} / ${number(vehicle.mileage)} miles</p>
             </div>
-            ${statusBadge(rental.status)}
+            ${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}
           </section>
           ${rental.settlement ? `<section class="customer-info-card"><h3>My rental balance</h3><p>Rent: ${money(rental.settlement.rentCharged)} · Contract deposit: ${money(rental.settlement.deposit)} · Received: ${money(rental.settlement.received)}</p><b>Due today: ${money(rental.settlement.due)}</b><p>Future rent (not yet due): ${money(rental.settlement.futureRent || 0)}. ${rental.settlement.nextDueDate ? `Next payment: ${shortDate(rental.settlement.nextDueDate)} · ${money(rental.settlement.nextAmount)}` : "No further scheduled rent payments."}</p><p>Credit above contract: ${money(rental.settlement.credit)}. Maintenance and business expenses are excluded. Deposit refunds are settled separately.</p>${rental.returnDate ? `<p>Returned ${shortDate(rental.returnDate)}</p>` : ""}</section>` : ""}
           <section class="customer-grid">
             <article class="customer-info-card">
               <small>Rental</small>
-              <b>${shortDate(rental.startDate)} to ${shortDate(rental.endDate)}</b>
+              <b>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</b>
               <span>${esc(rental.pickupLocation || "Pickup location not saved")}</span>
             </article>
             <article class="customer-info-card">
@@ -1210,7 +1210,7 @@
         <article class="profile-card">
           <small>Current rental</small>
           <h3>${rental ? esc(customer?.name || "Customer") : "Available for rental"}</h3>
-          <p>${rental ? `${shortDate(rental.startDate)} to ${shortDate(rental.endDate)}` : esc(vehicle.location)}</p>
+          <p>${rental ? `${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}` : esc(vehicle.location)}</p>
         </article>
         <article class="profile-card">
           <small>Balance</small>
@@ -1352,7 +1352,7 @@
         </div>
       </header>
       <section class="simple-section"><h3>Assigned vehicles (${openRentals.length})</h3><p>${openRentals.length > 1 ? "This customer has multiple open contracts. Choose the exact vehicle below to edit, return, or remove an accidental assignment." : "Manage each assignment from its own contract."}</p>
-        ${openRentals.map(rental => `<section class="return-settlement"><h3>${esc(vehicleById(rental.vehicleId)?.unit || "Missing vehicle")} · ${esc(rentalCode(rental))}</h3><p>${esc(rental.status)} · ${shortDate(rental.startDate)} to ${shortDate(rental.endDate)} · Due today: ${money(rentalBalance(rental))}</p><div class="row-actions"><button class="soft-btn" data-action="select-rental" data-id="${esc(rental.id)}">Open contract</button><button class="soft-btn" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button><button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button></div></section>`).join("") || '<p>No open vehicle assignments.</p>'}
+        ${openRentals.map(rental => `<section class="return-settlement"><h3>${esc(vehicleById(rental.vehicleId)?.unit || "Missing vehicle")} · ${esc(rentalCode(rental))}</h3><p>${esc(rental.status)} · ${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)} · Due today: ${money(rentalBalance(rental))}</p><div class="row-actions"><button class="soft-btn" data-action="select-rental" data-id="${esc(rental.id)}">Open contract</button><button class="soft-btn" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button><button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button></div></section>`).join("") || '<p>No open vehicle assignments.</p>'}
       </section>
       <nav class="tabs">${customerTabs.map((tab) => `<button class="${ui.customerTab === tab ? "active" : ""}" data-action="customer-tab" data-tab="${tab}">${tabLabel(tab)}</button>`).join("")}</nav>
       ${renderCustomerTab(customer, rentals)}
@@ -1393,7 +1393,9 @@
   }
 
   function renderRentals() {
-    const rentals = db.rentals.map((rental) => {
+    const filter = ui.rentalFilter || "current";
+    const matches = rental => filter === "all" || (filter === "cancelled" ? Boolean(rental.cancelledAt) : filter === "closed" ? rental.status === "closed" && !rental.cancelledAt : ["active", "reserved"].includes(rental.status) && !rental.cancelledAt);
+    const rentals = db.rentals.filter(matches).map((rental) => {
       const vehicle = vehicleById(rental.vehicleId);
       const customer = customerById(rental.customerId);
       return Object.assign({}, rental, { vehicleText: vehicle ? `${vehicle.unit} ${vehicle.make} ${vehicle.model}` : "", customerText: customer?.name || "" });
@@ -1412,6 +1414,8 @@
     }
     return `
       <section class="rental-simple-page">
+        <nav class="tabs filter-tabs" aria-label="Rental status">${["current", "closed", "cancelled", "all"].map(value => `<button class="${filter === value ? "active" : ""}" data-action="rental-filter" data-filter="${value}">${value === "current" ? "Current rentals" : tabLabel(value)}</button>`).join("")}</nav>
+        <p>${filter === "current" ? "Active and reserved contracts only. Closing or cancelling a contract moves it to history; restoring a customer does not reopen old contracts." : filter === "cancelled" ? "Mistaken assignments: no rental charges. Original records remain for reference." : "Closed contracts remain in history. Unpaid amounts remain collectible unless the assignment is explicitly cancelled as a mistake."}</p>
         ${rentals.length ? `<div class="rental-simple-list">${rentals.map(simpleRentalCard).join("")}</div>` : emptyBox("No rentals", "New rental records will appear here.")}
       </section>
     `;
@@ -1443,16 +1447,17 @@
     const balance = rentalBalance(rental);
     return `<article class="simple-rental-card">
       <div class="simple-rental-main">
-        <div><span>${esc(rentalCode(rental))}</span>${statusBadge(rental.status)}</div>
+        <div><span>${esc(rentalCode(rental))}</span>${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}</div>
         <h3><button class="rental-name-link" data-action="select-rental" data-id="${esc(rental.id)}">${esc(customer?.name || "Customer")}</button></h3>
         <p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")}</p>
-        <small>${shortDate(rental.startDate)} to ${shortDate(rental.endDate)}</small>
+        <small>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</small>
       </div>
       <div class="simple-rental-side">
+        <small>${rental.cancelledAt ? "Cancelled — no charges" : rental.status === "closed" ? "Unpaid final balance" : "Due today"}</small>
         <b class="${balance ? "text-danger" : "text-success"}">${money(balance)}</b>
         <small>${money(rentalPaid(rental.id))} paid</small>
       </div>
-      ${rental.status !== "closed" ? `<footer><button class="mini-btn primary" data-action="open-add" data-type="payment" data-rental-id="${esc(rental.id)}" data-vehicle-id="${esc(rental.vehicleId)}" data-customer-id="${esc(rental.customerId)}">Pay</button></footer>` : ""}
+      ${balance > 0 && !rental.cancelledAt ? `<footer><button class="mini-btn primary" data-action="open-add" data-type="payment" data-rental-id="${esc(rental.id)}" data-vehicle-id="${esc(rental.vehicleId)}" data-customer-id="${esc(rental.customerId)}">Pay</button></footer>` : ""}
     </article>`;
   }
 
@@ -1467,7 +1472,7 @@
     return `<article class="rental-card ${ui.rentalId === rental.id ? "active" : ""}">
       <div><small>${esc(rentalCode(rental))}</small><h4>${esc(customer?.name || "Customer")}</h4><p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")}</p></div>
       <div class="rental-card-lines">
-        <span>${shortDate(rental.startDate)} to ${shortDate(rental.endDate)}</span>
+        <span>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</span>
         <b class="${balance ? "text-danger" : "text-success"}">${money(balance)} balance</b>
       </div>
       <footer>
@@ -1492,14 +1497,14 @@
       <div class="compact-main">
         <span>${esc(rentalCode(rental))}</span>
         <button class="rental-name-link compact" data-action="select-rental" data-id="${esc(rental.id)}">${esc(customer?.name || "Customer")}</button>
-        <small>${shortDate(rental.startDate)} to ${shortDate(rental.endDate)}</small>
+        <small>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</small>
       </div>
       <div class="compact-balance">
-        ${statusBadge(rental.status)}
+        ${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}
         <b class="${balance ? "text-danger" : "text-success"}">${money(balance)}</b>
         <small>${money(rentalPaid(rental.id))} paid</small>
       </div>
-      ${rental.status !== "closed" ? `<footer><button class="mini-btn primary" data-action="open-add" data-type="payment" data-rental-id="${esc(rental.id)}" data-vehicle-id="${esc(rental.vehicleId)}" data-customer-id="${esc(rental.customerId)}">Pay</button></footer>` : ""}
+      ${balance > 0 && !rental.cancelledAt ? `<footer><button class="mini-btn primary" data-action="open-add" data-type="payment" data-rental-id="${esc(rental.id)}" data-vehicle-id="${esc(rental.vehicleId)}" data-customer-id="${esc(rental.customerId)}">Pay</button></footer>` : ""}
     </article>`;
   }
 
@@ -1515,11 +1520,11 @@
         <header class="profile-header compact">
           <div class="vehicle-title">
             <span class="plate">${esc(rentalCode(rental))}</span>
-            <div><h2>${esc(customer?.name || "Customer")}</h2><p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")} / ${shortDate(rental.startDate)} to ${shortDate(rental.endDate)}</p></div>
+            <div><h2>${esc(customer?.name || "Customer")}</h2><p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")} / ${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</p></div>
           </div>
           <div class="profile-actions">
-            ${statusBadge(rental.status)}
-            ${rental.cancelledAt ? '<b>Cancelled — assigned by mistake</b>' : rental.status !== "closed" ? `<button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button>` : ""}
+            ${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}
+            ${rental.cancelledAt ? '<b>Cancelled — assigned by mistake</b>' : `<button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button>`}
             <button class="primary-add" data-action="edit-contract" data-id="${esc(rental.id)}">Edit contract</button>
             <button class="soft-btn" data-action="customer-emails" data-id="${esc(rental.id)}">Customer emails</button>
             ${rental.status === "active" ? `<button class="soft-btn" data-action="change-vehicle" data-id="${esc(rental.id)}">Change vehicle</button>` : ""}
@@ -1665,10 +1670,10 @@
       const customer = customerById(rental.customerId);
       const balance = rentalBalance(rental);
       return [
-        `<b>${esc(rentalCode(rental))}</b><small>${statusBadge(rental.status)}</small>`,
+        `<b>${esc(rentalCode(rental))}</b><small>${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}</small>`,
         `<button class="table-link" data-action="select-vehicle" data-id="${esc(rental.vehicleId)}"><b>${esc(vehicle?.unit || "Vehicle")}</b><small>${esc(vehicle ? vehicle.make + " " + vehicle.model : "")}</small></button>`,
         `<button class="table-link" data-action="select-customer" data-id="${esc(rental.customerId)}"><b>${esc(customer?.name || "Customer")}</b><small>${esc(customer?.phone || "")}</small></button>`,
-        `<b>${shortDate(rental.startDate)}</b><small>Return ${shortDate(rental.endDate)}</small>`,
+        `<b>${shortDate(rental.startDate)}</b><small>Return ${shortDate(rental.returnDate || rental.endDate)}</small>`,
         `<b class="${balance ? "text-danger" : "text-success"}">${money(balance)}</b><small>${money(rentalPaid(rental.id))} paid</small>`,
         `<div class="row-actions"><button class="mini-btn primary" data-action="select-rental" data-id="${esc(rental.id)}">Open</button>${rental.status !== "closed" ? `<button class="mini-btn" data-action="open-add" data-type="payment" data-rental-id="${esc(rental.id)}">Pay</button>` : ""}</div>`
       ];
@@ -2003,7 +2008,7 @@
 
   function saveAssignmentCancellation(data) {
     const rental = rentalById(data.rentalId);
-    if (auth?.role !== "staff" || !rental || rental.status === "closed") return;
+    if (auth?.role !== "staff" || !rental || rental.cancelledAt) return;
     if (!cleanText(data.reason)) throw new Error("Enter why this assignment was a mistake.");
     if (db.payments.some(payment => payment.rentalId === rental.id)) throw new Error("This contract has payments. Resolve those records before cancelling an assignment.");
     rental.status = "closed"; rental.cancelledAt = new Date().toISOString(); rental.cancellationReason = cleanText(data.reason);
@@ -2968,6 +2973,7 @@
 
   function handleAction(button) {
     const action = button.dataset.action;
+    if (action === "rental-filter") { ui.rentalFilter = button.dataset.filter; ui.rentalMode = "list"; render(); return; }
     if (action === "directory-filter") {
       if (button.dataset.type === "customer") ui.customerArchive = button.dataset.filter;
       else ui.fleetArchive = button.dataset.filter;
@@ -2978,7 +2984,7 @@
       ui.modal = "manage-record"; ui.prefill = { recordType: button.dataset.type, recordId: button.dataset.id }; ui.actionMenu = ""; render(); return;
     }
     if (action === "cancel-assignment") {
-      if (auth?.role !== "staff" || !rentalById(button.dataset.id) || rentalById(button.dataset.id).status === "closed") return;
+      if (auth?.role !== "staff" || !rentalById(button.dataset.id) || rentalById(button.dataset.id).cancelledAt) return;
       ui.modal = "cancel-assignment"; ui.prefill = { rentalId: button.dataset.id }; ui.actionMenu = ""; render(); return;
     }
     if (action === "customer-emails") {

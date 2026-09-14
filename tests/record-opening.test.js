@@ -74,6 +74,30 @@ function contractInput(extra = {}) {
   return { rentalId: 'rental', previousVehicleId: 'old', vehicleId: 'old', name: 'Updated renter', phone: '5551234567', email: 'new@example.test', address: 'New address', license: 'UPDATED-LICENSE', unit: 'UPDATED-CAR', make: 'Toyota', model: 'Corolla', plate: 'NEWPLATE', vin: 'VIN-123', mileage: '150', returnMileage: '150', startDate: '2026-01-01', endDate: '2026-12-31', monthlyRate: '1200', deposit: '250', status: 'active', notes: 'Updated contract', ...extra };
 }
 
+test('rental history separates closed and cancelled records; restoring a customer never reopens rentals', () => {
+  const data = assignmentData();
+  data.rentals.push({ ...data.rentals[0], id: 'closed-mistake', vehicleId: 'new', status: 'closed' });
+  const page = frontend(data);
+  page.click({ action: 'select-rental', id: 'rental' });
+  page.click({ action: 'back-to-list', list: 'rentals' });
+  assert.match(page.app.innerHTML, /data-id="rental"/);
+  assert.doesNotMatch(page.app.innerHTML, /data-id="closed-mistake"/);
+  page.click({ action: 'rental-filter', filter: 'closed' });
+  assert.match(page.app.innerHTML, /data-id="closed-mistake"/);
+  page.saveRecordManagement({ recordType: 'customer', recordId: 'customer', operation: 'restore' });
+  assert.equal(page.savedData().rentals[1].status, 'closed');
+  page.saveAssignmentCancellation({ rentalId: 'closed-mistake', reason: 'Was assigned in error, never rented' });
+  assert.equal(require('../rental-math').summary(page.savedData().rentals[1], []).due, 0);
+  page.click({ action: 'select-rental', id: 'closed-mistake' });
+  assert.match(page.app.innerHTML, /Cancelled — assigned by mistake/);
+  page.click({ action: 'back-to-list', list: 'rentals' });
+  page.click({ action: 'rental-filter', filter: 'closed' });
+  assert.doesNotMatch(page.app.innerHTML, /data-id="closed-mistake"/);
+  page.click({ action: 'rental-filter', filter: 'cancelled' });
+  assert.match(page.app.innerHTML, /data-id="closed-mistake"/);
+  assert.equal(page.savedData().payments[0].amount, 400);
+});
+
 test('closed customers are hidden by default, discoverable and restorable without losing history', () => {
   const data = assignmentData(); data.rentals[0].status = 'closed';
   const page = frontend(data);

@@ -1,4 +1,4 @@
-const CACHE_NAME = "rental-management-shell-v11-document-thumbnails";
+const CACHE_NAME = "rental-management-shell-v12-rental-history";
 const APP_SHELL = [
   "/",
   "/index.html",
