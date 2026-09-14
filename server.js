@@ -233,7 +233,10 @@ async function ensureCustomerUsers(db, customers) {
   for (const customer of list) {
     const username = phoneKey(customer.phone);
     if (!username || !customer.id) continue;
-    const existing = await users.findOne({ username });
+    const byUsername = await users.findOne({ username });
+    // A phone number is a login name, never authority to take over another account.
+    if (byUsername && (byUsername.role !== "customer" || String(byUsername.customerId) !== String(customer.id))) continue;
+    const existing = byUsername || await users.findOne({ role: "customer", customerId: customer.id });
     const base = {
       username,
       role: "customer",
@@ -244,6 +247,8 @@ async function ensureCustomerUsers(db, customers) {
     };
     if (existing) {
       await users.updateOne({ _id: existing._id }, { $set: base });
+      await users.updateMany({ role: "customer", customerId: customer.id, _id: { $ne: existing._id } }, { $set: { active: false } });
+      if (existing.username !== username) for (const [token, session] of sessions) { if (session.role === "customer" && session.customerId === customer.id) sessions.delete(token); }
     } else {
       await users.insertOne(Object.assign({
         _id: uid("usr"),
@@ -252,6 +257,7 @@ async function ensureCustomerUsers(db, customers) {
       }, base, { defaultPassword: true }, hashPassword(temporaryCustomerPassword())));
     }
   }
+  await users.updateMany({ role: "customer", customerId: { $nin: list.map(customer => customer.id) } }, { $set: { active: false } });
 }
 
 async function ensureDefaultUsers(db) {
@@ -409,6 +415,16 @@ async function writeDatabase(data) {
     error.statusCode = 503;
     throw error;
   }
+  for (const customer of data?.customers || []) {
+    const username = phoneKey(customer.phone);
+    if (!username) continue;
+    const account = await db.collection("users").findOne({ username });
+    if (account && (account.role !== "customer" || String(account.customerId) !== String(customer.id))) {
+      const error = new Error("A customer phone number is already linked to a different login account. Correct that customer phone before saving.");
+      error.statusCode = 409; throw error;
+    }
+  }
+
   const settings = Object.assign({}, data && data.settings ? data.settings : {});
   await db.collection("settings").replaceOne(
     { _id: "main" },
@@ -630,12 +646,12 @@ async function customerCheckIn(request, response) {
   const session = requireRole(request, "customer");
   const payload = await readJsonBody(request);
   const db = await getDatabase();
+  if (!db) { sendJson(response, 503, { ok: false, error: "Database is unavailable." }); return; }
   const rental = await db.collection("rentals").findOne({
-    _id: String(payload.rentalId || ""),
-    customerId: session.customerId
-  }) || await db.collection("rentals").findOne({
+    ...(payload.rentalId ? { _id: String(payload.rentalId) } : {}),
     customerId: session.customerId,
-    status: { $in: ["active", "reserved"] }
+    status: "active",
+    cancelledAt: { $exists: false }
   }, { sort: { startDate: -1 } });
   if (!rental) {
     sendJson(response, 404, { ok: false, error: "No assigned rental was found for this customer." });
@@ -784,7 +800,6 @@ async function serve(request, response) {
   if (!/^(index\.html|app\.js|rental-math\.js|styles\.css|service-worker\.js|manifest\.webmanifest|assets[\\/].+)$/i.test(relativePath)) {
     send(response, 404, "Not found"); return;
   }
-
   if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
     send(response, 403, "Forbidden");
     return;

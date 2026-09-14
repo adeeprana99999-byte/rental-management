@@ -3108,6 +3108,13 @@ button:is([data-action="edit-contract"], [data-action="edit-customer"], [data-ac
 }
 .modal { max-height: calc(100dvh - 40px); overscroll-behavior: contain; }
 .filter-tabs { margin-left: 0; margin-right: 0; max-width: 100%; min-width: 0; }
+.directory-page .tabs { margin-left: 0; margin-right: 0; max-width: 100%; min-width: 0; }
+@media (max-width: 600px) {
+  .page-title { flex-wrap: wrap; }
+  .page-title > div { min-width: 0; }
+  .page-title > .title-actions { width: 100%; }
+  .page-title > .title-actions > button { flex: 1 1 0; min-width: 0; width: auto; }
+}
 .document-preview > *, .document-page-title > * { min-width: 0; overflow-wrap: anywhere; }
 .document-card { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: start; }
 .document-card .document-thumbnail {

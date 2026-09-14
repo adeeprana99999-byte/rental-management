@@ -13,6 +13,32 @@ vm.runInContext(fs.readFileSync(path.join(root, 'server.js'), 'utf8').replace(
 ), server);
 const clean = server.cleanMongoDocument;
 
+test('customer phone updates preserve account identity and password and cannot overwrite staff accounts', async () => {
+  const rows = [{ _id: 'staff', username: '111', role: 'staff', passwordHash: 'staff-hash' }, { _id: 'customer-user', username: '222', role: 'customer', customerId: 'c', passwordHash: 'keep-hash', active: true }];
+  const matches = (row, query) => Object.entries(query).every(([key, value]) => typeof value === 'object' ? ('$ne' in value ? row[key] !== value.$ne : !value.$nin.includes(row[key])) : row[key] === value);
+  const users = {
+    findOne: async query => { const row = rows.find(row => matches(row, query)); return row ? { ...row } : null; },
+    updateOne: async (query, update) => Object.assign(rows.find(row => matches(row, query)), update.$set),
+    updateMany: async (query, update) => rows.filter(row => matches(row, query)).forEach(row => Object.assign(row, update.$set)),
+    insertOne: async row => rows.push(row)
+  };
+  await server.ensureCustomerUsers({ collection: () => users }, [{ id: 'c', phone: '333', name: 'Customer' }, { id: 'other', phone: '111', name: 'Conflict' }]);
+  assert.equal(rows.length, 2); assert.equal(rows[0].role, 'staff'); assert.equal(rows[1].username, '333'); assert.equal(rows[1].passwordHash, 'keep-hash');
+});
+
+test('customer check-in requires the exact owned active rental and never falls back to another contract', async () => {
+  const { EventEmitter } = require('node:events');
+  const original = server.getDatabase; const queries = [];
+  server.getDatabase = async () => ({ collection: () => ({ findOne: async query => { queries.push(query); return null; } }) });
+  vm.runInContext("sessions.set('test-customer', { token: 'test-customer', role: 'customer', customerId: 'c', expiresAt: Date.now() + 60000 });", server);
+  try {
+    const request = new EventEmitter(); request.headers = { authorization: 'Bearer test-customer' };
+    let status; const response = { writeHead: code => { status = code; }, end() {} };
+    const pending = server.customerCheckIn(request, response); request.emit('data', JSON.stringify({ rentalId: 'closed-or-other-contract', odometer: 200 })); request.emit('end'); await pending;
+    assert.equal(status, 404); assert.equal(queries.length, 1); assert.equal(queries[0]._id, 'closed-or-other-contract'); assert.equal(queries[0].customerId, 'c'); assert.equal(queries[0].status, 'active');
+  } finally { server.getDatabase = original; }
+});
+
 test('customer rental summary includes only the scoped contract and its payments', () => {
   const rental = { id: 'rental-a', startDate: '2026-09-01', returnDate: '2026-09-10', monthlyRate: 3000, deposit: 0 };
   const visible = server.sanitizeCustomerRental(rental, [{ rentalId: 'rental-a', amount: 400 }, { rentalId: 'other', amount: 99999 }]);
@@ -37,7 +63,7 @@ function frontend(data) {
     setTimeout: () => 0, clearTimeout() {}, alert: message => { throw new Error(message); }
   });
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract, saveAssignmentCancellation, saveRental, saveRecordManagement }; })();'), context);
+  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract, saveAssignmentCancellation, saveRental, saveRecordManagement, savePayment, saveMaintenance, saveInspection, saveExpense }; })();'), context);
   return {
     app,
     saveVehicle: context.testApp.saveVehicle,
@@ -48,6 +74,10 @@ function frontend(data) {
     saveAssignmentCancellation: context.testApp.saveAssignmentCancellation,
     saveRental: context.testApp.saveRental,
     saveRecordManagement: context.testApp.saveRecordManagement,
+    savePayment: context.testApp.savePayment,
+    saveMaintenance: context.testApp.saveMaintenance,
+    saveInspection: context.testApp.saveInspection,
+    saveExpense: context.testApp.saveExpense,
     savedData: () => JSON.parse(cache.get('rental_management_real_app_v1')),
     click(dataset) {
       // The delegated click handler must also work when a child inside the row is clicked.
@@ -73,6 +103,52 @@ function assignmentData() {
 function contractInput(extra = {}) {
   return { rentalId: 'rental', previousVehicleId: 'old', vehicleId: 'old', name: 'Updated renter', phone: '5551234567', email: 'new@example.test', address: 'New address', license: 'UPDATED-LICENSE', unit: 'UPDATED-CAR', make: 'Toyota', model: 'Corolla', plate: 'NEWPLATE', vin: 'VIN-123', mileage: '150', returnMileage: '150', startDate: '2026-01-01', endDate: '2026-12-31', monthlyRate: '1200', deposit: '250', status: 'active', notes: 'Updated contract', ...extra };
 }
+
+test('full lifecycle keeps customer, vehicles, contract, payments, service, inspection and archives linked', async () => {
+  const data = assignmentData(); data.rentals = []; data.payments = []; data.vehicles[0].status = 'available';
+  Object.assign(data.customers[0], { phone: '5551112222', address: 'Test address', license: 'TEST-LICENSE' });
+  const page = frontend(data);
+  await page.saveRental({ customerId: 'customer', vehicleId: 'old', driverName: 'Existing customer', driverPhone: '5551112222', customerAddress: 'Test address', licenseNumber: 'TEST-LICENSE', startDate: '2026-09-01', endDate: '2026-10-01', monthlyRate: 600, deposit: 100, status: 'active', pickupLocation: '', notes: '' });
+  let saved = page.savedData(); const id = saved.rentals[0].id;
+  assert.equal(saved.customers.length, 1); assert.equal(saved.vehicles[0].status, 'rented');
+  page.savePayment({ rentalId: id, date: '2026-09-14', amount: 100, method: 'Cash', reference: '', notes: '' });
+  page.saveMaintenance({ vehicleId: 'old', type: 'Oil change', date: '2026-09-14', status: 'scheduled', odometer: 100, shop: '', notes: '' });
+  page.saveVehicleChange({ rentalId: id, previousVehicleId: 'old', vehicleId: 'new', returnMileage: 150 });
+  saved = page.savedData(); assert.equal(saved.vehicles[0].status, 'maintenance'); assert.equal(saved.payments[0].vehicleId, 'old');
+  page.saveInspection({ vehicleId: 'new', rentalId: id, date: '2026-09-14', odometer: 30, condition: 'Passed', fuel: 'Full', notes: '' });
+  const before = require('../rental-math').summary(page.savedData().rentals[0], page.savedData().payments).due;
+  page.saveExpense({ vehicleId: 'new', rentalId: id, date: '2026-09-14', amount: 400, category: 'Repair', status: 'paid', paymentMethod: 'Cash', notes: '' });
+  assert.equal(require('../rental-math').summary(page.savedData().rentals[0], page.savedData().payments).due, before);
+  page.saveRentalReturn({ rentalId: id, returnDate: '2026-09-14', returnMileage: 50, returnNotes: '' });
+  saved = page.savedData(); assert.equal(saved.inspections[0].customerId, 'customer'); assert.equal(saved.vehicles[1].status, 'available');
+  assert.equal(require('../rental-math').summary(saved.rentals[0], saved.payments).due, 280);
+  page.savePayment({ rentalId: id, date: '2026-09-14', amount: 280, method: 'Cash', reference: '', notes: '' });
+  page.savePayment({ paymentKind: 'maintenance', maintenanceId: saved.maintenance[0].id, date: '2026-09-14', amount: 75, method: 'Cash', reference: '', notes: '' });
+  page.saveRecordManagement({ recordType: 'customer', recordId: 'customer', operation: 'archive' });
+  page.saveRecordManagement({ recordType: 'customer', recordId: 'customer', operation: 'restore' });
+  saved = page.savedData(); assert.equal(saved.rentals[0].status, 'closed'); assert.equal(saved.payments.length, 2); assert.equal(saved.vehicles[0].status, 'available');
+  assert.equal(require('../rental-math').summary(saved.rentals[0], saved.payments).due, 0);
+  const reloaded = frontend(saved); reloaded.click({ action: 'select-rental', id }); assert.match(reloaded.app.innerHTML, /Existing customer/);
+});
+
+test('invalid payments and mismatched inspection/expense references cannot alter records', () => {
+  const data = assignmentData(); const page = frontend(data);
+  for (const amount of [-1, 0, 'bad']) assert.throws(() => page.savePayment({ rentalId: 'rental', date: '2026-09-14', amount }), /positive payment/);
+  assert.throws(() => page.saveInspection({ rentalId: 'rental', vehicleId: 'new' }), /matching/);
+  assert.throws(() => page.saveExpense({ rentalId: 'rental', vehicleId: 'new' }), /different vehicle/);
+  assert.equal(page.savedData().payments.length, 1); assert.equal(page.savedData().inspections.length, 0);
+  const cancelled = assignmentData(); cancelled.rentals[0].cancelledAt = '2026-09-14'; cancelled.rentals[0].status = 'closed';
+  assert.throws(() => frontend(cancelled).savePayment({ rentalId: 'rental', date: '2026-09-14', amount: 100 }), /cancelled assignment/);
+});
+
+test('vehicle profile edits cannot contradict active rental availability', () => {
+  const page = frontend(assignmentData());
+  const edit = { editVehicleId: 'old', unit: 'OLD', make: 'Toyota', model: 'Corolla', vin: '', plate: '', status: 'available', mileage: 100, location: '', color: '' };
+  page.saveVehicle(edit);
+  assert.equal(page.savedData().vehicles[0].status, 'rented');
+  assert.throws(() => page.saveVehicle({ ...edit, status: 'inactive' }), /open rentals/);
+  assert.equal(page.savedData().rentals[0].vehicleId, 'old');
+});
 
 test('rental history separates closed and cancelled records; restoring a customer never reopens rentals', () => {
   const data = assignmentData();
@@ -145,7 +221,7 @@ test('paid assignments cannot be cancelled and duplicate rentals require explici
   const page = frontend(assignmentData());
   assert.throws(() => page.saveAssignmentCancellation({ rentalId: 'rental', reason: 'Wrong assignment' }), /has payments/);
   assert.equal(page.savedData().rentals[0].status, 'active');
-  await assert.rejects(page.saveRental({ customerId: 'customer', vehicleId: 'new' }), /already has an assigned vehicle/);
+  await assert.rejects(page.saveRental({ customerId: 'customer', vehicleId: 'new', status: 'active', startDate: '2026-09-01', endDate: '2026-10-01', monthlyRate: 600 }), /already has an assigned vehicle/);
   assert.equal(page.savedData().rentals.length, 1);
 });
 

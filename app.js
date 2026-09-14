@@ -224,6 +224,12 @@
         return;
       }
       remoteAvailable = response.ok;
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        dbState = { state: "offline", label: "Not synced", detail: payload.error || "The server rejected this save. Your browser copy is retained." };
+        ui.toast = "Not saved to server: " + dbState.detail;
+        render(); return;
+      }
       if (response.ok) {
         dbState = {
           state: "connected",
@@ -885,13 +891,13 @@
   function renderCustomerPortal() {
     const customer = db.customers[0] || null;
     const rentals = customer ? rentalsForCustomer(customer.id) : [];
-    const rental = rentals.find((item) => item.status === "active") || rentals.find((item) => item.status === "reserved") || rentals[0] || null;
+    const rental = rentals.find(item => item.id === ui.portalRentalId) || rentals.find((item) => item.status === "active") || rentals.find((item) => item.status === "reserved") || rentals[0] || null;
     const vehicle = rental ? vehicleById(rental.vehicleId) : null;
     const rentalDocs = rental ? documentsFor("rental", rental.id) : [];
     const customerDocs = customer ? documentsFor("customer", customer.id) : [];
     const vehicleDocs = vehicle ? documentsFor("vehicle", vehicle.id).filter((doc) => ["Vehicle insurance", "Registration"].includes(doc.type)) : [];
     const readingItems = rental
-      ? db.inspections.filter((item) => item.rentalId === rental.id || item.customerId === customer?.id).sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+      ? db.inspections.filter((item) => item.rentalId === rental.id || (!item.rentalId && item.customerId === customer?.id && item.vehicleId === rental.vehicleId)).sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
       : [];
     return `<div class="customer-shell">
       <header class="customer-topbar">
@@ -906,6 +912,7 @@
         </div>
       </header>
       <main class="customer-content">
+        ${rentals.length > 1 ? `<label>Choose your contract<select data-portal-rental>${rentals.map(item => `<option value="${esc(item.id)}" ${item.id === rental?.id ? "selected" : ""}>${esc(rentalCode(item))} · ${esc(vehicleById(item.vehicleId)?.unit || "Vehicle")} · ${esc(item.cancelledAt ? "cancelled" : item.status)}</option>`).join("")}</select></label>` : ""}
         ${rental && vehicle ? `
           <section class="customer-hero-card">
             <div>
@@ -959,6 +966,7 @@
   }
 
   function customerCheckInForm(rental, vehicle) {
+    if (rental.status !== "active" || rental.cancelledAt) return '<p>Vehicle updates are available only for an active rental.</p>';
     return `<form data-form="customer-checkin" class="customer-checkin-form">
       ${hiddenField("rentalId", rental.id)}
       ${hiddenField("vehicleId", vehicle.id)}
@@ -2576,6 +2584,8 @@
   function saveVehicle(data) {
     const existing = data.editVehicleId ? vehicleById(data.editVehicleId) : null;
     if (data.editVehicleId && !existing) throw new Error("This vehicle no longer exists. Refresh the fleet and try again.");
+    const openRentals = existing ? rentalsForVehicle(existing.id).filter(rental => ["active", "reserved"].includes(rental.status)) : [];
+    if (openRentals.length && data.status === "inactive") throw new Error("Resolve the vehicle's open rentals before marking it inactive.");
     const vehicle = {
       id: existing ? existing.id : uid("veh"),
       unit: data.unit.trim(),
@@ -2596,6 +2606,7 @@
     };
     if (existing) Object.assign(existing, vehicle);
     else db.vehicles.unshift(vehicle);
+    if (openRentals.some(rental => rental.status === "active") || db.maintenance.some(item => item.vehicleId === vehicle.id && ["scheduled", "in_progress", "pending_payment"].includes(item.status))) syncVehicle(vehicle.id);
     ui.vehicleId = vehicle.id;
     ui.view = "fleet";
     ui.fleetMode = "profile";
@@ -2606,6 +2617,8 @@
   function saveCustomer(data) {
     const existing = data.editCustomerId ? customerById(data.editCustomerId) : null;
     if (data.editCustomerId && !existing) throw new Error("This customer no longer exists. Refresh the customers and try again.");
+    if (existing && data.status === "inactive" && rentalsForCustomer(existing.id).some(rental => ["active", "reserved"].includes(rental.status))) throw new Error("Resolve this customer's open rentals before marking them inactive.");
+    if (textKey(data.license) && db.customers.some(customer => customer.id !== existing?.id && textKey(customer.license) === textKey(data.license))) throw new Error("This driver license is already used by another customer.");
     const phone = phoneKey(data.phone);
     if (phone && db.customers.some((customer) => customer.id !== existing?.id && phoneKey(customer.phone) === phone)) {
       throw new Error("This phone number is already used by another customer.");
@@ -2684,6 +2697,7 @@
       (phone && phoneKey(customer.phone) === phone)
     );
     if (existing) {
+      if (db.customers.some(customer => customer.id !== existing.id && ((phone && phoneKey(customer.phone) === phone) || (licenseKey && textKey(customer.license) === licenseKey)))) throw new Error("The phone and license refer to different customers. Select the correct customer details.");
       existing.name = details.name;
       existing.phone = details.phone;
       existing.email = details.email || existing.email || "";
@@ -2726,6 +2740,9 @@
   }
 
   async function saveRental(data) {
+    if (!RentalMath.date(data.startDate) || !RentalMath.date(data.endDate) || data.endDate < data.startDate) throw new Error("Enter valid rental dates; return date cannot precede start date.");
+    if (!["active", "reserved"].includes(data.status)) throw new Error("Choose active or reserved for a new rental.");
+    if (!Number.isFinite(Number(data.monthlyRate)) || Number(data.monthlyRate) <= 0 || !Number.isFinite(Number(data.deposit || 0)) || Number(data.deposit || 0) < 0) throw new Error("Enter a positive monthly rate and a non-negative deposit.");
     const knownCustomer = customerById(data.customerId) || db.customers.find(customer => (phoneKey(data.driverPhone) && phoneKey(customer.phone) === phoneKey(data.driverPhone)) || (textKey(data.licenseNumber) && textKey(customer.license) === textKey(data.licenseNumber)));
     if (knownCustomer && db.rentals.some(rental => rental.customerId === knownCustomer.id && ["active", "reserved"].includes(rental.status)) && data.additionalRental !== "on") {
       throw new Error("This customer already has an assigned vehicle. Open their profile to change or return it. For an intentional additional rental, tick the additional vehicle box.");
@@ -2767,6 +2784,7 @@
       alert(error.message || "One of the rental files could not be added.");
       return;
     }
+    if (vehicleById(data.vehicleId)?.status !== "available" || activeRentalForVehicle(data.vehicleId)) throw new Error("The vehicle assignment changed while files were loading. Reopen the rental form.");
     const customer = saveCustomerFromRental(data);
     if (!customer) return;
     const rental = {
@@ -2805,6 +2823,7 @@
   }
 
   function saveMaintenance(data) {
+    if (!vehicleById(data.vehicleId)) throw new Error("Select an existing vehicle for maintenance.");
     const item = {
       id: uid("mnt"),
       vehicleId: data.vehicleId,
@@ -2831,6 +2850,7 @@
   }
 
   function savePayment(data) {
+    if (!Number.isFinite(Number(data.amount)) || Number(data.amount) <= 0 || !RentalMath.date(data.date) || data.date > todayKey()) throw new Error("Enter a positive payment amount and a valid date no later than today.");
     if (data.paymentKind === "maintenance") {
       const item = maintenanceById(data.maintenanceId);
       if (!item) {
@@ -2870,6 +2890,7 @@
     }
     const rental = rentalById(data.rentalId);
     if (!rental) return;
+    if (rental.cancelledAt) throw new Error("A cancelled assignment cannot receive payments. Select the correct contract.");
     const payment = {
       id: uid("pay"),
       rentalId: rental.id,
@@ -2889,6 +2910,8 @@
   }
 
   function saveExpense(data) {
+    if (!vehicleById(data.vehicleId)) throw new Error("Select an existing vehicle for this expense.");
+    if (data.rentalId && rentalById(data.rentalId)?.vehicleId !== data.vehicleId) throw new Error("The selected rental belongs to a different vehicle. Choose the matching rental or no rental.");
     const expense = {
       id: uid("exp"),
       vehicleId: data.vehicleId,
@@ -2908,12 +2931,16 @@
   }
 
   function saveInspection(data) {
+    if (!vehicleById(data.vehicleId)) throw new Error("Select an existing vehicle for this inspection.");
+    const rental = data.rentalId ? rentalById(data.rentalId) : null;
+    if (data.rentalId && (!rental || rental.vehicleId !== data.vehicleId || rental.cancelledAt)) throw new Error("Choose a matching, non-cancelled rental for this vehicle.");
     const inspection = {
       id: uid("ins"),
       vehicleId: data.vehicleId,
       rentalId: data.rentalId,
       date: data.date,
       odometer: Number(data.odometer || 0),
+      customerId: rental?.customerId || "",
       condition: data.condition,
       fuel: data.fuel,
       notes: data.notes.trim()
@@ -2930,6 +2957,7 @@
   }
 
   async function saveDocument(data) {
+    const targetDocumentId = ui.documentId;
     const ownerId = data.ownerType === "vehicle" ? data.vehicleId : data.ownerType === "customer" ? data.customerId : data.rentalId;
     if (!ownerId) {
       alert("Select the car, customer, or rental this document belongs to.");
@@ -2946,7 +2974,10 @@
       alert("Upload a file or take a photo before saving this document.");
       return;
     }
-    const existing = ui.documentId ? db.documents.find((doc) => doc.id === ui.documentId) : null;
+    const owner = data.ownerType === "vehicle" ? vehicleById(ownerId) : data.ownerType === "customer" ? customerById(ownerId) : data.ownerType === "rental" ? rentalById(ownerId) : null;
+    if (!owner) throw new Error("The linked record no longer exists. Reopen the document upload from the correct record.");
+    const existing = targetDocumentId ? db.documents.find((doc) => doc.id === targetDocumentId) : null;
+    if (targetDocumentId && !existing) throw new Error("This document was removed while uploading. Reopen the correct record and try again.");
     const doc = existing || {
       id: uid("doc"),
       ownerType: data.ownerType,
@@ -3295,6 +3326,7 @@
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target.matches('[data-portal-rental]')) { ui.portalRentalId = event.target.value; render(); return; }
     if (event.target.matches('[data-form="contract"] select[name="vehicleId"]')) {
       const vehicle = vehicleById(event.target.value), form = event.target.closest("form");
       if (vehicle) for (const name of ["unit", "make", "model", "plate", "vin", "mileage"]) form.elements[name].value = vehicle[name] ?? "";
