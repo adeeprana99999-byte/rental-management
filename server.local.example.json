@@ -1,0 +1,11 @@
+{
+  "mongoUri": "mongodb+srv://username:password@cluster.example.mongodb.net/?appName=Cluster0",
+  "databaseName": "rental_management",
+  "staffUsers": [
+    {
+      "name": "Desk Staff",
+      "mobile": "3125550148",
+      "password": "change-to-strong-staff-password"
+    }
+  ]
+}

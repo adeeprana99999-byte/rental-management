@@ -1,0 +1,9 @@
+{
+  "appId": "com.rentalmanagement.app",
+  "appName": "Rental Management",
+  "webDir": "www",
+  "server": {
+    "url": "https://your-rental-app.example.com",
+    "cleartext": false
+  }
+}

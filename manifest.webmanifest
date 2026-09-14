@@ -1,0 +1,60 @@
+{
+  "id": "/",
+  "name": "Rental Management",
+  "short_name": "Rental",
+  "description": "Rental fleet, customer, document, payment, and vehicle check-in management.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "portrait-primary",
+  "background_color": "#eef4f6",
+  "theme_color": "#071521",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/assets/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/app-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/app-icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Fleet",
+      "short_name": "Fleet",
+      "url": "/?view=fleet",
+      "icons": [{ "src": "/assets/app-icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Rentals",
+      "short_name": "Rentals",
+      "url": "/?view=rentals",
+      "icons": [{ "src": "/assets/app-icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Customers",
+      "short_name": "Customers",
+      "url": "/?view=customers",
+      "icons": [{ "src": "/assets/app-icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

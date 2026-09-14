@@ -1,0 +1,13 @@
+{
+  "name": "rental-real-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check app.js && node --check server.js && node --check service-worker.js"
+  },
+  "dependencies": {
+    "mongodb": "^6.20.0"
+  }
+}
