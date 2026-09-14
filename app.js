@@ -981,10 +981,8 @@
     const isImage = String(doc.fileType || "").startsWith("image/");
     const fileMeta = hasFile
       ? [doc.fileName || "Saved file", fileSizeLabel(doc.fileSize)].filter(Boolean).join(" / ")
-      : "File record saved";
-    const visual = hasFile && isImage
-      ? `<img src="${esc(doc.fileData)}" alt="${esc(doc.type)}">`
-      : `<span>${iconSvg(documentTypeIcon(doc.type))}</span>`;
+      : "File not attached";
+    const visual = documentThumbnail(doc);
     return `<article class="document-card customer-document-card">
       ${visual}
       <div>
@@ -1427,12 +1425,14 @@
         <div><small>Documents</small><h2>${esc(filter.label)}</h2><p>Saved files from rent-out, customers, rentals, and cars</p></div>
         <div class="title-actions">
           <button class="soft-btn back-doc-btn" data-view="dashboard">${iconSvg("dashboard")} Back</button>
+          <button class="primary-add" data-action="open-add" data-type="document">Upload document</button>
           ${filter.id === "all" ? "" : `<button class="soft-btn" data-action="document-filter" data-document-filter="all">${iconSvg("documents")} All files</button>`}
         </div>
       </section>
       <nav class="tabs filter-tabs">
         ${DOCUMENT_GROUPS.map((group) => `<button class="${filter.id === group.id ? "active" : ""}" data-action="document-filter" data-document-filter="${esc(group.id)}"><i>${iconSvg(group.icon)}</i>${esc(group.label)} ${documentGroupCount(group.id) ? `<span>${number(documentGroupCount(group.id))}</span>` : ""}</button>`).join("")}
       </nav>
+      <p class="form-note">${docs.filter(doc => doc.fileData).length} files ready to open · ${docs.filter(doc => !doc.fileData).length} entries need a file uploaded. A saved filename alone does not contain the photo or document.</p>
       ${renderDocumentList(docs)}
     `;
   }
@@ -1742,15 +1742,22 @@
     return `<section class="document-grid">${docs.map(documentCard).join("")}</section>`;
   }
 
+  function documentThumbnail(doc) {
+    const image = /^image\//i.test(doc.fileType || "") || /^data:image\//i.test(doc.fileData || "") || /\.(png|jpe?g|webp|gif)$/i.test(doc.fileName || "");
+    const pdf = /pdf/i.test(doc.fileType || "") || /\.pdf$/i.test(doc.fileName || "");
+    const content = doc.fileData && image
+      ? `<img src="${esc(doc.fileData)}" alt="" loading="lazy" decoding="async" data-document-thumbnail>`
+      : `<span aria-hidden="true">${iconSvg(documentTypeIcon(doc.type))}<small>${doc.fileData ? pdf ? "PDF" : "FILE" : "UPLOAD"}</small></span>`;
+    return `<button class="document-thumbnail" data-action="${doc.fileData ? "open-document" : auth?.role === "staff" ? "attach-document" : "open-document"}" data-id="${esc(doc.id)}" aria-label="${esc((doc.fileData ? "Open " : "Upload ") + (doc.fileName || documentTypeLabel(doc.type)))}">${content}</button>`;
+  }
+
   function documentCard(doc) {
     const hasFile = Boolean(doc.fileData);
     const isImage = String(doc.fileType || "").startsWith("image/");
     const fileMeta = hasFile
       ? [doc.fileName || "Saved file", fileSizeLabel(doc.fileSize)].filter(Boolean).join(" / ")
-      : "No uploaded file";
-    const visual = hasFile && isImage
-      ? `<img src="${esc(doc.fileData)}" alt="${esc(doc.type)}">`
-      : `<span>${iconSvg(documentTypeIcon(doc.type))}</span>`;
+      : `${doc.fileName || "Document entry"} — file not attached. Upload the original to view it.`;
+    const visual = documentThumbnail(doc);
     return `<article class="document-card ${hasFile ? "" : "missing"}">
       ${visual}
       <div>
@@ -1769,8 +1776,8 @@
 
   function renderDocumentPreview(doc) {
     if (!doc) return emptyBox("Document missing", "This document record is not available.");
-    const isImage = String(doc.fileType || "").startsWith("image/");
-    const isPdf = String(doc.fileType || "").includes("pdf");
+    const isImage = String(doc.fileType || "").startsWith("image/") || /^data:image\//i.test(doc.fileData || "") || /\.(png|jpe?g|webp|gif)$/i.test(doc.fileName || "");
+    const isPdf = String(doc.fileType || "").includes("pdf") || /^data:application\/pdf/i.test(doc.fileData || "") || /\.pdf$/i.test(doc.fileName || "");
     const body = doc.fileData
       ? isImage
         ? `<img class="document-preview-image" src="${esc(doc.fileData)}" alt="${esc(doc.type)}">`
@@ -1785,6 +1792,7 @@
         ${detail("Expiry", doc.expiryDate ? shortDate(doc.expiryDate) : "No expiry")}
       </div>
       ${body}
+      ${doc.fileData ? `<p><a class="soft-btn" href="${esc(doc.fileData)}" download="${esc(doc.fileName || "document")}">Download original</a></p><p>If the embedded preview is blank, download the original and open it in your photo or PDF viewer.</p>` : ""}
     </section>`;
   }
 

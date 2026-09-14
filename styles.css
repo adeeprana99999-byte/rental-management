@@ -3107,6 +3107,21 @@ button:is([data-action="edit-contract"], [data-action="edit-customer"], [data-ac
   .profile-header .profile-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
 }
 .modal { max-height: calc(100dvh - 40px); overscroll-behavior: contain; }
+.filter-tabs { margin-left: 0; margin-right: 0; max-width: 100%; min-width: 0; }
+.document-preview > *, .document-page-title > * { min-width: 0; overflow-wrap: anywhere; }
+.document-card { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: start; }
+.document-card .document-thumbnail {
+  width: 64px; height: 64px; min-height: 64px; padding: 4px;
+  display: grid; place-items: center; border: 1px solid #c6ddd7;
+  border-radius: 9px; background: #eff8f5; color: #23594d; cursor: pointer;
+}
+.document-thumbnail img { width: 100%; height: 100%; object-fit: contain; border-radius: 5px; }
+.document-thumbnail > span { display: grid; justify-items: center; gap: 4px; }
+.document-thumbnail .ui-icon { width: 24px; height: 24px; }
+.document-thumbnail small { font-size: 9px; font-weight: 700; }
+.document-thumbnail:focus-visible { outline: 3px solid #175c50; outline-offset: 3px; }
+.document-card footer { grid-column: 1 / -1; max-width: none; justify-content: flex-start; }
+.document-card small { white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 860px) {
   input, select, textarea { min-width: 0; max-width: 100%; font-size: 16px !important; }
   button, .mini-btn, .back-btn, .soft-btn, .ghost-btn, .file-choice { min-height: 44px; }
