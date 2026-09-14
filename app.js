@@ -3,6 +3,11 @@
 
   var STORAGE_KEY = 'driver_fleet_box_v1';
   var app = document.getElementById('app');
+  var ROLE_MODULES = {
+    platform_owner: ['dashboard', 'vendors', 'bookings', 'leases', 'reports', 'settings'],
+    vendor_admin: ['dashboard', 'bookings', 'leases', 'vehicles', 'drivers', 'trips', 'expenses', 'maintenance', 'reports', 'settings'],
+    driver: ['dashboard', 'leases', 'trips', 'expenses', 'maintenance']
+  };
   var state = loadState();
   var ui = {
     module: 'dashboard',
@@ -14,14 +19,16 @@
     detail: null,
     media: null,
     editing: null,
+    prefill: null,
     rentLeaseId: '',
+    incomeMonth: new Date().toISOString().slice(0, 7),
     reportView: 'vehicle',
-    leaseLedgerOpen: false,
-    scrollPositions: {},
     mobile: {
       leaseId: '',
       vehicleId: '',
       driverId: '',
+      tripId: '',
+      expenseId: '',
       bookingId: '',
       maintenanceId: '',
       vendorId: '',
@@ -55,7 +62,7 @@
   }
 
   function money(value) {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(Number(value) || 0);
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value) || 0);
   }
 
   function inr(value) {
@@ -270,7 +277,7 @@
   }
 
   function isPhoneLayout() {
-    return window.matchMedia ? window.matchMedia('(max-width: 780px)').matches : window.innerWidth <= 780;
+    return window.matchMedia ? window.matchMedia('(max-width: 780px), (max-width: 980px) and (max-height: 500px) and (pointer: coarse)').matches : window.innerWidth <= 780;
   }
 
   function useMobileStaffInterface() {
@@ -375,7 +382,7 @@
     var start = dateFromKey(startDate);
     var end = dateFromKey(endDate);
     if (!start || !end || start > end) return 0;
-    return Math.floor((end - start) / 86400000) + 1;
+    return Math.round((Date.UTC(end.getFullYear(), end.getMonth(), end.getDate()) - Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())) / 86400000) + 1;
   }
 
   function leaseRentCutoff(lease, endDate) {
@@ -552,11 +559,29 @@
     }, 0));
   }
 
+  // Internal expenses never participate in a renter's rent charge or balance.
+  function leasePeriodBillAmount(lease, period) {
+    if (lease.returnBilling === 'prorated' && lease.returnDate && period === monthKey(lease.returnDate)) {
+      return leasePeriodUsage(lease, period, lease.returnDate).accrued;
+    }
+    return Number(lease.monthlyRent || 0);
+  }
+
+  function returnRentSummary(lease, date) {
+    var proposed = Object.assign({}, lease, { returnDate: date, returnBilling: 'prorated' });
+    var billed = roundMoney(monthKeysBetween(lease.startDate, date).reduce(function (sum, period) {
+      var existing = leaseCharges(lease.id).find(function (charge) { return charge.period === period; });
+      return sum + (period === monthKey(date) ? leasePeriodBillAmount(proposed, period) : Number(existing ? existing.amountDue : lease.monthlyRent || 0));
+    }, 0));
+    var paid = leasePaymentTotal(lease);
+    return { billed: billed, paid: paid, pending: roundMoney(Math.max(0, billed - paid)), credit: roundMoney(Math.max(0, paid - billed)) };
+  }
+
   function leaseBilledRent(lease, endDate) {
     var cutoff = leaseRentCutoff(lease, endDate || today());
     return roundMoney(monthKeysBetween(lease.startDate, cutoff).reduce(function (sum, period) {
       var charge = leaseCharges(lease.id).find(function (item) { return item.period === period; });
-      return sum + Number(charge ? charge.amountDue : lease.monthlyRent || 0);
+      return sum + Number(charge ? charge.amountDue : leasePeriodBillAmount(lease, period));
     }, 0));
   }
 
@@ -860,7 +885,7 @@
   }
 
 
-  function syncLeaseChargesForLease(lease) {
+  function syncLeaseChargesForLease(lease, preserveAmounts) {
     var desiredPeriods = monthKeysBetween(lease.startDate, leaseRentCutoff(lease, today()));
     var desiredSet = desiredPeriods.reduce(function (map, period) {
       map[period] = true;
@@ -876,7 +901,7 @@
       if (!charge) {
         charge = {
           id: uid('rent'), vendorId: lease.vendorId, leaseId: lease.id, driverId: lease.driverId, vehicleId: lease.vehicleId,
-          period: period, dueDate: dueDateForPeriod(period, lease.rentDueDay), amountDue: Number(lease.monthlyRent || 0),
+          period: period, dueDate: dueDateForPeriod(period, lease.rentDueDay), amountDue: leasePeriodBillAmount(lease, period),
           amountPaid: 0, paidAt: '', paymentMethod: '', reference: '', notes: '', receiptName: '', receipt: '', payments: [], status: 'due'
         };
         state.rentCharges.push(charge);
@@ -885,7 +910,7 @@
         charge.driverId = lease.driverId;
         charge.vehicleId = lease.vehicleId;
         charge.dueDate = dueDateForPeriod(period, lease.rentDueDay);
-        charge.amountDue = Number(lease.monthlyRent || 0);
+        if (!preserveAmounts || period === monthKey(lease.returnDate)) charge.amountDue = leasePeriodBillAmount(lease, period);
       }
       syncChargePaymentTotal(charge);
     });
@@ -1007,52 +1032,17 @@
   }
 
   function icon(name) {
-    var svgOpen = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
-    var paths = {
-      dashboard: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
-      vendors: '<path d="M3 21h18"/><path d="M5 21V5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v16"/><path d="M15 9h3a1 1 0 0 1 1 1v11"/><path d="M8 8h1M8 12h1M11 8h1M11 12h1"/>',
-      bookings: '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M8 3v3M16 3v3"/><path d="M9.5 14.5l1.6 1.6 3.4-3.4"/>',
-      leases: '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M14 3v4h4"/><path d="M8 12h8M8 16h5"/>',
-      vehicles: '<path d="M4 13l1.6-4.3A2 2 0 0 1 7.5 7.4h9a2 2 0 0 1 1.9 1.3L20 13"/><path d="M3 13h18v4a1 1 0 0 1-1 1h-1.5"/><path d="M5.5 18H4a1 1 0 0 1-1-1v-4"/><circle cx="7.5" cy="17.5" r="1.7"/><circle cx="16.5" cy="17.5" r="1.7"/>',
-      drivers: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
-      trips: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6H15a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h6.5"/>',
-      expenses: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M14.5 9.3a2.5 2.5 0 0 0-2.5-1.3c-1.4 0-2.5.8-2.5 2s1.1 1.7 2.5 2 2.5.8 2.5 2-1.1 2-2.5 2a2.5 2.5 0 0 1-2.5-1.3"/>',
-      maintenance: '<path d="M14.7 6.3a4 4 0 0 1-5.2 5.2L5 15.9a2.1 2.1 0 0 0 3 3l4.4-4.5a4 4 0 0 1 5.2-5.2l-2.6 2.6-2-2 2.7-2.5Z"/>',
-      reports: '<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5" rx="0.6"/><rect x="12" y="8" width="3" height="9" rx="0.6"/><rect x="17" y="5" width="3" height="12" rx="0.6"/>',
-      settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a7.8 7.8 0 0 0 0-3l1.7-1.3-1.7-3-2 .8a7.6 7.6 0 0 0-2.6-1.5L14.5 3h-3l-.3 2.5a7.6 7.6 0 0 0-2.6 1.5l-2-.8-1.7 3L6.6 10.5a7.8 7.8 0 0 0 0 3l-1.7 1.3 1.7 3 2-.8a7.6 7.6 0 0 0 2.6 1.5l.3 2.5h3l.3-2.5a7.6 7.6 0 0 0 2.6-1.5l2 .8 1.7-3Z"/>'
+    var icons = {
+      dashboard: 'DB', vendors: 'VN', bookings: 'BK', leases: 'LS', vehicles: 'VEH', drivers: 'DR', trips: 'TR',
+      expenses: '$', maintenance: 'MT', reports: 'RP', settings: 'ST'
     };
-    var content = paths[name];
-    if (!content) return '<span class="nav-icon">DF</span>';
-    return '<span class="nav-icon">' + svgOpen + content + '</svg></span>';
-  }
-
-  function statIcon(code) {
-    var svgOpen = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
-    var paths = {
-      LS: '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M14 3v4h4"/><path d="M8 12h8M8 16h5"/>',
-      VEH: '<path d="M4 13l1.6-4.3A2 2 0 0 1 7.5 7.4h9a2 2 0 0 1 1.9 1.3L20 13"/><path d="M3 13h18v4a1 1 0 0 1-1 1h-1.5"/><path d="M5.5 18H4a1 1 0 0 1-1-1v-4"/><circle cx="7.5" cy="17.5" r="1.7"/><circle cx="16.5" cy="17.5" r="1.7"/>',
-      '$': '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M14.5 9.3a2.5 2.5 0 0 0-2.5-1.3c-1.4 0-2.5.8-2.5 2s1.1 1.7 2.5 2 2.5.8 2.5 2-1.1 2-2.5 2a2.5 2.5 0 0 1-2.5-1.3"/>',
-      INR: '<circle cx="12" cy="12" r="9"/><path d="M9 8h6M9 11h6M14 8c0 3-2 3.5-4 3.5l4 4.5"/>',
-      NET: '<path d="M4 20V4"/><path d="M4 20h16"/><path d="M7 15l4-4 3 3 5-6"/>',
-      VN: '<path d="M3 21h18"/><path d="M5 21V5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v16"/><path d="M15 9h3a1 1 0 0 1 1 1v11"/><path d="M8 8h1M8 12h1M11 8h1M11 12h1"/>',
-      ADM: '<circle cx="12" cy="8" r="3.2"/><path d="M6 20a6 6 0 0 1 12 0"/><path d="M17 4.5l1 1 2-2"/>',
-      '!': '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/>',
-      BK: '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M8 3v3M16 3v3"/><path d="M9.5 14.5l1.6 1.6 3.4-3.4"/>',
-      WEB: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18Z"/>',
-      DOC: '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M14 3v4h4"/><path d="M8 12h8M8 16h5"/>',
-      MT: '<path d="M14.7 6.3a4 4 0 0 1-5.2 5.2L5 15.9a2.1 2.1 0 0 0 3 3l4.4-4.5a4 4 0 0 1 5.2-5.2l-2.6 2.6-2-2 2.7-2.5Z"/>'
-    };
-    var content = paths[code];
-    if (!content) return esc(code || '');
-    return svgOpen + content + '</svg>';
+    return '<span class="nav-icon">' + (icons[name] || 'DF') + '</span>';
   }
 
   function modules() {
     var user = currentUser();
     if (!user) return [];
-    if (user.role === 'driver') return ['dashboard', 'leases', 'maintenance'];
-    if (user.role === 'vendor_admin') return ['dashboard', 'bookings', 'leases', 'vehicles', 'drivers', 'maintenance', 'reports', 'settings'];
-    return ['dashboard', 'vendors', 'bookings', 'leases', 'reports', 'settings'];
+    return (ROLE_MODULES[user.role] || ROLE_MODULES.platform_owner).slice();
   }
 
   function moduleTitle(id) {
@@ -1061,14 +1051,14 @@
       return {
         dashboard: 'Operations dashboard',
         leases: 'My lease',
-        trips: 'Legacy trips',
+        trips: 'Trips & revenue',
         expenses: 'Expense claims',
         maintenance: 'Maintenance'
       }[id] || 'Driver Fleet';
     }
     return {
       dashboard: 'Operations dashboard', vendors: 'Vendor companies', bookings: 'Bookings', vehicles: 'Fleet vehicles',
-      drivers: 'Drivers', leases: 'Leases & rent', trips: 'Legacy trips', expenses: 'Expense claims',
+      drivers: 'Drivers', leases: 'Leases & rent', trips: 'Trips & revenue', expenses: 'Expense claims',
       maintenance: 'Maintenance', reports: 'Reports', settings: 'Settings'
     }[id] || 'Driver Fleet';
   }
@@ -1079,31 +1069,16 @@
     if (currentUser()?.role === 'driver') {
       return {
         leases: 'Car, rent, mileage, and documents',
-        trips: 'Old trip records',
+        trips: 'Trips, rentals, and revenue',
         expenses: 'Claims and receipt proof',
         maintenance: 'Requests and service cost'
       }[id] || '';
     }
     return {
       vendors: 'Companies, access, and field rules', bookings: 'Public booking requests and deposits', vehicles: 'Units, finance, and media', drivers: 'People and assignments',
-      leases: 'Start leases, receive rent, returns, and mileage', trips: 'Legacy trip history', expenses: 'Claims and receipt proof', maintenance: 'Requests and service cost',
+      leases: 'Start leases, receive rent, returns, and mileage', trips: 'Trips, rentals, and revenue', expenses: 'Claims and receipt proof', maintenance: 'Requests and service cost',
       reports: 'Revenue and operating results', settings: 'Account and company rules'
     }[id] || '';
-  }
-
-  function focusMainHeading() {
-    setTimeout(function () {
-      var heading = document.querySelector('.mobile-staff-page h1, .mobile-staff-page h2, .page h2, .page h1');
-      if (heading) {
-        heading.setAttribute('tabindex', '-1');
-        try { heading.focus({ preventScroll: true }); } catch (e) { heading.focus(); }
-      }
-    }, 30);
-  }
-
-  function restoreModuleScroll(moduleId) {
-    var y = ui.scrollPositions[moduleId] || 0;
-    setTimeout(function () { window.scrollTo(0, y); }, 0);
   }
 
   function render() {
@@ -1542,8 +1517,8 @@
     var preferred = user.role === 'platform_owner'
       ? ['dashboard', 'vendors', 'bookings', 'leases', 'reports', 'settings']
       : user.role === 'driver'
-        ? ['dashboard', 'leases', 'maintenance', 'settings']
-        : ['dashboard', 'bookings', 'leases', 'vehicles', 'drivers', 'maintenance', 'reports', 'settings'];
+        ? ['dashboard', 'leases', 'trips', 'expenses', 'maintenance']
+        : ['dashboard', 'bookings', 'leases', 'vehicles', 'drivers', 'trips', 'expenses', 'maintenance', 'reports', 'settings'];
     return preferred.filter(function (moduleId) { return allowed.indexOf(moduleId) >= 0; });
   }
 
@@ -1555,6 +1530,8 @@
       leases: 'Leases',
       vehicles: 'Fleet',
       drivers: 'Drivers',
+      trips: 'Trips',
+      expenses: 'Claims',
       maintenance: 'Service',
       reports: 'Money',
       settings: 'Settings'
@@ -1573,9 +1550,27 @@
   }
 
   function renderMobileStaffNav() {
-    return '<nav class="mobile-staff-nav">' + mobileStaffModules().map(function (moduleId) {
-      return '<button class="' + (ui.module === moduleId ? 'active' : '') + '" data-module="' + moduleId + '">' + icon(moduleId) + '<small>' + esc(mobileModuleLabel(moduleId)) + '</small></button>';
-    }).join('') + '</nav>';
+    var allowed = mobileStaffModules();
+    var primary = allowed.slice(0, 4);
+    var more = allowed.slice(4);
+    var paths = {
+      dashboard: 'M3 10 12 3l9 7v11h-6v-7H9v7H3Z',
+      bookings: 'M4 5h16v16H4ZM4 10h16M8 3v4m8-4v4',
+      leases: 'M6 3h9l4 4v14H6ZM9 11h7M9 15h7',
+      vehicles: 'M3 16v-5l3-6h12l3 6v5ZM3 11h18M6 16v3m12-3v3M6 13h1m10 0h1',
+      drivers: 'M8 7a4 4 0 1 0 8 0 4 4 0 1 0-8 0M4 21v-3a8 5 0 0 1 16 0v3',
+      vendors: 'M4 21V4h16v17M8 8h2m4 0h2M8 12h2m4 0h2M10 21v-5h4v5',
+      trips: 'M4 20 8 4l8 16 4-16M4 20h0',
+      expenses: 'M6 3h12v18l-3-2-3 2-3-2-3 2ZM9 7h6M9 11h6M9 15h3',
+      maintenance: 'M14 4a5 5 0 0 0-5 7L3 17a3 3 0 0 0 4 4l6-6a5 5 0 0 0 7-5l-4 2-3-3 2-5Z',
+      reports: 'M4 3v18h17M8 17v-5m5 5V8m5 9V4',
+      settings: 'M3 6h18M3 12h18M3 18h18M8 3v6m8 0v6m-8 0v6'
+    };
+    function navButton(moduleId) {
+      return '<button class="' + (ui.module === moduleId ? 'active' : '') + '" data-module="' + moduleId + '"' + (ui.module === moduleId ? ' aria-current="page"' : '') + '><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + paths[moduleId] + '"/></svg><small>' + esc(mobileModuleLabel(moduleId)) + '</small></button>';
+    }
+    return '<nav class="mobile-staff-nav" aria-label="Main navigation">' + primary.map(navButton).join('') +
+      (more.length ? '<details class="mobile-more"><summary' + (more.indexOf(ui.module) >= 0 ? ' class="active"' : '') + '><span aria-hidden="true">•••</span><small>More</small></summary><div class="mobile-more-menu" aria-label="More destinations">' + more.map(navButton).join('') + '</div></details>' : '') + '</nav>';
   }
 
   function mobileMetric(label, value, hint, tone) {
@@ -1605,8 +1600,7 @@
   }
 
   function mobileRecordButton(kindKey, recordId, title, meta, value, tone) {
-    var aria = 'Open ' + (title || 'record') + (meta ? ', ' + meta : '') + (value ? ', ' + value : '');
-    return '<button class="mobile-record-button ' + (tone || '') + '" data-action="mobile-select" data-kind="' + esc(kindKey) + '" data-id="' + esc(recordId) + '" aria-label="' + esc(aria) + '">' +
+    return '<button class="mobile-record-button ' + (tone || '') + '" data-action="mobile-select" data-kind="' + esc(kindKey) + '" data-id="' + esc(recordId) + '">' +
       '<span><b>' + esc(title) + '</b><small>' + esc(meta || '') + '</small></span>' +
       (value ? '<strong>' + esc(value) + '</strong>' : '') +
     '</button>';
@@ -1624,6 +1618,8 @@
     if (ui.module === 'leases') return renderMobileLeases();
     if (ui.module === 'vehicles') return renderMobileVehicles();
     if (ui.module === 'drivers') return renderMobileDrivers();
+    if (ui.module === 'trips') return renderMobileTrips();
+    if (ui.module === 'expenses') return renderMobileExpenses();
     if (ui.module === 'maintenance') return renderMobileMaintenance();
     if (ui.module === 'reports') return renderMobileReports();
     if (ui.module === 'settings') return '<section class="mobile-form-screen">' + renderSettings() + '</section>';
@@ -1644,10 +1640,15 @@
     var maintenance = scope(state.maintenance).filter(function (item) {
       return ['completed', 'rejected'].indexOf(item.status) < 0;
     }).sort(function (a, b) { return String(a.date || '').localeCompare(String(b.date || '')); });
+    var expenses = scope(state.expenses).filter(function (expense) {
+      return expense.status === 'pending';
+    }).sort(function (a, b) { return String(a.date || '').localeCompare(String(b.date || '')); });
     var feed = [];
     dueCharges.slice(0, 3).forEach(function (charge) {
       feed.push({
         module: 'leases',
+        kind: 'lease',
+        id: charge.leaseId,
         title: (driverById(charge.driverId)?.name || 'Driver') + ' rent due',
         meta: (vehicleById(charge.vehicleId)?.unitNumber || 'Vehicle') + ' - due ' + (charge.dueDate || 'not set'),
         value: money(chargeRunningBalance(charge).balance)
@@ -1656,32 +1657,43 @@
     bookings.slice(0, 3).forEach(function (booking) {
       feed.push({
         module: 'bookings',
+        kind: 'booking',
+        id: booking.id,
         title: booking.customerName || 'Booking request',
         meta: 'Pickup ' + booking.pickupDate + ' - return ' + booking.returnDate,
         value: inr(booking.bookingFee || 100)
       });
     });
+    expenses.slice(0, 3).forEach(function (expense) {
+      feed.push({
+        module: 'expenses',
+        kind: 'expense',
+        id: expense.id,
+        title: expense.category || 'Expense claim',
+        meta: (driverById(expense.driverId)?.name || 'Driver') + ' - ' + (vehicleById(expense.vehicleId)?.unitNumber || 'vehicle'),
+        value: money(expense.amount)
+      });
+    });
     maintenance.slice(0, 3).forEach(function (item) {
       feed.push({
         module: 'maintenance',
+        kind: 'maintenance',
+        id: item.id,
         title: item.type || 'Maintenance',
         meta: (vehicleById(item.vehicleId)?.unitNumber || 'Vehicle') + ' - ' + (item.date || 'date pending'),
         value: money(item.estimate)
       });
     });
-    return '<section class="mobile-hero"><span>' + esc(today()) + '</span><h2>' + esc(user.name.split(' ')[0]) + ', fleet work for today.</h2><p>' + esc(number(feed.length) + ' priority items from live rent, booking, and service records.') + '</p></section>' +
+    return '<section class="mobile-hero"><span>' + esc(today()) + '</span><h2>' + esc(user.name.split(' ')[0]) + ', fleet work for today.</h2><p>' + esc(number(feed.length) + ' priority items from live rent, booking, claims, and service records.') + '</p></section>' +
       '<section class="mobile-metrics">' +
         mobileMetric('Active leases', number(m.activeLeases), 'assigned cars', 'blue') +
         mobileMetric('Open rent', money(m.openRent), 'bill balance', m.openRent ? 'amber' : 'green') +
-        mobileMetric('Bookings', number(scope(state.bookings).length), 'public requests', 'teal') +
+        mobileMetric(user.role === 'driver' ? 'Claims' : 'Bookings', user.role === 'driver' ? number(expenses.length) : number(scope(state.bookings).length), user.role === 'driver' ? 'pending review' : 'public requests', 'teal') +
         mobileMetric('Service', number(maintenance.length), 'open items', maintenance.length ? 'amber' : 'green') +
       '</section>' +
-      '<section class="mobile-module-grid">' + mobileStaffModules().filter(function (moduleId) { return moduleId !== 'dashboard'; }).map(function (moduleId) {
-        return '<button class="mobile-module-card" data-module="' + moduleId + '">' + icon(moduleId) + '<span><b>' + esc(mobileModuleLabel(moduleId)) + '</b><small>' + esc(moduleDescription(moduleId)) + '</small></span></button>';
-      }).join('') + '</section>' +
       '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">NEXT 5 DAYS</span><h2>Work queue</h2></div>' +
         (feed.length ? '<div class="mobile-record-list">' + feed.slice(0, 5).map(function (item) {
-          return '<button class="mobile-feed-item" data-module="' + esc(item.module) + '" aria-label="' + esc('Open ' + item.title + ', ' + item.meta + ', ' + item.value) + '"><span><b>' + esc(item.title) + '</b><small>' + esc(item.meta) + '</small></span><strong>' + esc(item.value) + '</strong></button>';
+          return '<button class="mobile-feed-item" data-action="open-workspace" data-module-target="' + esc(item.module) + '" data-kind="' + esc(item.kind || '') + '" data-id="' + esc(item.id || '') + '"><span><b>' + esc(item.title) + '</b><small>' + esc(item.meta) + '</small></span><strong>' + esc(item.value) + '</strong></button>';
         }).join('') + '</div>' : mobileEmpty('No urgent work', 'No rent, bookings, or service records need attention in the next five days.')) +
       '</section>' +
       '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">ACTIVE LEASES</span><h2>Pick a lease</h2></div>' +
@@ -1691,7 +1703,10 @@
           var summary = leaseRentSummary(lease);
           return mobileRecordButton('leaseId', lease.id, driver?.name || 'Driver', (vehicle?.unitNumber || 'Vehicle') + ' - ' + number(summary.billableDays) + ' days', money(summary.pending), summary.pending ? 'danger' : 'success');
         }).join('') + '</div>' : mobileEmpty('No active leases', 'Start a lease from the desktop CRM or the lease tab.')) +
-      '</section>';
+      '</section>' +
+      '<section class="mobile-module-grid">' + mobileStaffModules().filter(function (moduleId) { return moduleId !== 'dashboard'; }).map(function (moduleId) {
+        return '<button class="mobile-module-card" data-module="' + moduleId + '">' + icon(moduleId) + '<span><b>' + esc(mobileModuleLabel(moduleId)) + '</b><small>' + esc(moduleDescription(moduleId)) + '</small></span></button>';
+      }).join('') + '</section>';
   }
 
   function renderMobileLeases() {
@@ -1710,7 +1725,7 @@
         var vehicle = vehicleById(lease.vehicleId);
         return (driver?.name || 'Driver') + ' - ' + (vehicle?.unitNumber || 'Vehicle') + ' - ' + lease.startDate;
       }) +
-      (canAdminLease ? '<div class="mobile-action-row"><button class="btn btn-primary" data-action="toggle-lease-form">Start lease</button><button class="btn btn-soft" data-action="toggle-rent-form">Receive rent</button></div>' : '<div class="mobile-action-row"><button class="btn btn-primary" data-action="toggle-mileage-form">Send mileage</button><button class="btn btn-soft" data-module="maintenance">Service</button></div>') +
+      (canAdminLease ? '<div class="mobile-action-row"><button class="btn btn-primary" data-action="toggle-lease-form">Start lease</button><button class="btn btn-soft" data-action="toggle-rent-form">Receive rent</button><button class="btn btn-soft" data-action="toggle-return-form">Return vehicle</button></div>' : '<div class="mobile-action-row"><button class="btn btn-primary" data-action="toggle-mileage-form">Send mileage</button><button class="btn btn-soft" data-module="maintenance">Service</button></div>') +
     '</section>';
     if (!selected) {
       return body + '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">RECENT</span><h2>Tap a lease</h2></div>' +
@@ -1724,41 +1739,35 @@
     var driver = driverById(selected.driverId);
     var vehicle = vehicleById(selected.vehicleId);
     var summary = leaseRentSummary(selected);
-    var charges = leaseBillableCharges(selected).slice().reverse();
+    var charges = leaseBillableCharges(selected);
     var payments = rentPaymentEntries(leaseCharges(selected.id));
-    var backBar = '<div class="mobile-back-bar"><button class="btn btn-soft mobile-back-btn" data-action="clear-mobile-select" data-kind="leaseId">&larr; Back to leases</button></div>';
-    var leaseCard = '<section class="mobile-record-card"><div class="mobile-record-head"><span>LEASE</span><h2>' + esc(driver?.name || 'Driver') + '</h2><p>' + esc(vehicle ? vehicle.unitNumber + ' - ' + vehicle.make + ' ' + vehicle.model : 'Vehicle') + '</p></div>' +
+    return body +
+      '<section class="mobile-record-card"><div class="mobile-record-head"><span>LEASE</span><h2>' + esc(driver?.name || 'Driver') + '</h2><p>' + esc(vehicle ? vehicle.unitNumber + ' - ' + vehicle.make + ' ' + vehicle.model : 'Vehicle') + '</p></div>' +
         '<div class="mobile-line-grid">' +
-          mobileLine('Start date', selected.startDate) +
+          mobileLine('Lease status', selected.returnDate ? 'Returned' : selected.status) + mobileLine('Return date', selected.returnDate || 'Not returned') + mobileLine('Start date', selected.startDate) +
           mobileLine('Days used', number(summary.billableDays) + ' through ' + summary.cutoff) +
           mobileLine('Monthly rent', money(selected.monthlyRent)) +
           mobileLine('Billed rent', money(summary.billed)) +
           mobileLine('Received', money(summary.paid)) +
-          mobileLine('Balance', money(summary.pending)) +
+          mobileLine('Rent due from renter', money(summary.pending)) + mobileLine('Rent credit owed to renter', money(summary.credit)) +
           mobileLine('Start mileage', number(selected.startOdometer)) +
           mobileLine('Current mileage', number(vehicle?.mileage || selected.startOdometer)) +
-        '</div>' +
-        (canAdminLease ? '<div class="mobile-action-row"><button class="btn btn-primary" data-action="edit-lease" data-id="' + selected.id + '">Update lease</button>' + (summary.pending > 0 ? '<button class="btn btn-soft" data-action="rent-for-lease" data-id="' + selected.id + '">Collect ' + esc(money(summary.pending)) + '</button>' : '') + '<button class="btn btn-soft" data-action="return-for-lease" data-id="' + selected.id + '">Return</button></div>' : '') +
-      '</section>';
-    return backBar + body +
+        '</div><p class="mobile-note">Rent due is rent charges minus rent payments. Maintenance and business expenses do not change this balance. Deposit is tracked separately.</p>' +
+        (canAdminLease ? '<div class="mobile-action-row"><button class="btn btn-primary" data-action="edit-lease" data-id="' + selected.id + '">Update lease</button>' + (summary.pending > 0 ? '<button class="btn btn-soft" data-action="rent-for-lease" data-id="' + selected.id + '">Collect ' + esc(money(summary.pending)) + '</button>' : '') + (selected.status === 'active' ? '<button class="btn btn-soft" data-action="return-for-lease" data-id="' + selected.id + '">Return vehicle</button>' : '') + '</div>' : '') +
+      '</section>' +
       '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">BILLS</span><h2>Monthly ledger</h2></div>' +
         (charges.length ? '<div class="mobile-bill-list">' + charges.map(function (charge) {
           var running = chargeRunningBalance(charge);
           var paid = chargeDisplayPaymentSummary(charge);
           charge.status = chargeDisplayStatus(charge);
-          var actionable = canAdminLease && running.balance > 0;
-          var inner = '<div><span>' + esc(charge.period) + '</span><b>' + esc(charge.dueDate || 'No due date') + '</b><small>' + esc(chargeUsage(charge).days + ' days counted') + '</small></div><div><span>Bill</span><b>' + money(charge.amountDue) + '</b><small>Received ' + money(paid.total) + '</small></div><div><span>Balance</span><b class="' + (running.balance ? 'text-danger' : 'text-success') + '">' + money(running.balance) + '</b><small>' + esc(charge.status) + (actionable ? ' &middot; tap to record' : '') + '</small></div>';
-          return actionable
-            ? '<button type="button" class="mobile-bill-card is-actionable" data-action="rent-charge" data-id="' + charge.id + '" aria-label="' + esc('Record payment for ' + charge.period + ', balance ' + money(running.balance)) + '">' + inner + '</button>'
-            : '<article class="mobile-bill-card">' + inner + '</article>';
+          return '<article class="mobile-bill-card"><div><span>' + esc(charge.period) + '</span><b>' + esc(charge.dueDate || 'No due date') + '</b><small>' + esc(chargeUsage(charge).days + ' days counted') + '</small></div><div><span>Bill</span><b>' + money(charge.amountDue) + '</b><small>Received ' + money(paid.total) + '</small></div><div><span>Balance</span><b class="' + (running.balance ? 'text-danger' : 'text-success') + '">' + money(running.balance) + '</b><small>' + esc(charge.status) + '</small></div>' + (canAdminLease && running.balance > 0 ? '<button class="mini-btn primary" data-action="rent-charge" data-id="' + charge.id + '">Record</button>' : '') + '</article>';
         }).join('') + '</div>' : mobileEmpty('No bills', 'No rent bills are connected to this lease yet.')) +
       '</section>' +
       '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">PAYMENTS</span><h2>Received history</h2></div>' +
         (payments.length ? '<div class="mobile-record-list">' + payments.map(function (entry) {
-          return '<button class="mobile-feed-item" data-action="payment-details" data-id="' + esc(entry.id) + '" aria-label="' + esc('Open payment ' + money(entry.amount) + ' on ' + (entry.payment.paidAt || 'unknown date')) + '"><span><b>' + esc(entry.payment.paidAt || 'Date not saved') + '</b><small>' + esc(entry.periods.join(', ') + ' - ' + (entry.payment.paymentMethod || 'method not saved')) + '</small></span><strong>' + money(entry.amount) + '</strong></button>';
+          return '<button class="mobile-feed-item" data-action="payment-details" data-id="' + esc(entry.id) + '"><span><b>' + esc(entry.payment.paidAt || 'Date not saved') + '</b><small>' + esc(entry.periods.join(', ') + ' - ' + (entry.payment.paymentMethod || 'method not saved')) + '</small></span><strong>' + money(entry.amount) + '</strong></button>';
         }).join('') + '</div>' : mobileEmpty('No payments', 'Payments will appear here after rent is received.')) +
-      '</section>' +
-      leaseCard;
+      '</section>';
   }
 
   function renderMobileVehicles() {
@@ -1778,16 +1787,13 @@
     var driver = driverById(selected.driverId);
     var activeLease = activeLeaseForVehicle(selected.id);
     var services = scope(state.maintenance).filter(function (item) { return item.vehicleId === selected.id; }).sort(function (a, b) { return String(b.date || '').localeCompare(String(a.date || '')); });
-    var backBar = '<div class="mobile-back-bar"><button class="btn btn-soft mobile-back-btn" data-action="clear-mobile-select" data-kind="vehicleId">&larr; Back to fleet</button></div>';
-    var vehicleCard = '<section class="mobile-record-card"><div class="mobile-record-head"><span>VEHICLE</span><h2>' + esc(selected.unitNumber) + '</h2><p>' + esc(selected.year + ' ' + selected.make + ' ' + selected.model) + '</p></div>' +
+    return body + '<section class="mobile-record-card"><div class="mobile-record-head"><span>VEHICLE</span><h2>' + esc(selected.unitNumber) + '</h2><p>' + esc(selected.year + ' ' + selected.make + ' ' + selected.model) + '</p></div>' +
       '<div class="mobile-line-grid">' + mobileLine('Assigned driver', driver?.name || 'Unassigned') + mobileLine('Status', selected.status) + mobileLine('Mileage', number(selected.mileage) + ' mi') + mobileLine('Plate', selected.plate) + mobileLine('VIN', selected.vin) + mobileLine('Loan balance', money(selected.loanBalance)) + '</div>' +
       '<div class="mobile-action-row"><button class="btn btn-primary" data-action="edit-vehicle" data-id="' + selected.id + '">Update vehicle</button><button class="btn btn-soft" data-action="vehicle-details" data-id="' + selected.id + '">Files</button><button class="btn btn-soft" data-action="vehicle-status" data-id="' + selected.id + '">Status</button></div>' +
       (activeLease ? '<div class="mobile-related-card"><span>Active lease</span><b>' + esc(driverById(activeLease.driverId)?.name || 'Driver') + '</b><small>' + money(leaseRentSummary(activeLease).pending) + ' open balance</small></div>' : '<div class="mobile-related-card"><span>Availability</span><b>Ready when status is available</b><small>No active lease is attached.</small></div>') +
-      '</section>';
-    return backBar + body +
-      '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">SERVICE</span><h2>Maintenance by car</h2></div>' +
+      '</section><section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">SERVICE</span><h2>Maintenance by car</h2></div>' +
       (services.length ? '<div class="mobile-record-list">' + services.slice(0, 8).map(function (item) { return '<button class="mobile-feed-item" data-action="maintenance-details" data-id="' + item.id + '"><span><b>' + esc(item.type) + '</b><small>' + esc((item.date || 'No date') + ' - ' + (item.shop || 'shop pending')) + '</small></span><strong>' + money(item.estimate) + '</strong></button>'; }).join('') + '</div>' : mobileEmpty('No service history', 'Maintenance records for this car will appear here.')) +
-      '</section>' + vehicleCard;
+      '</section>';
   }
 
   function renderMobileDrivers() {
@@ -1807,12 +1813,84 @@
     }
     var vehicle = vehicleById(selected.vehicleId);
     var lease = activeLeaseForDriver(selected.id);
-    var driverBackBar = '<div class="mobile-back-bar"><button class="btn btn-soft mobile-back-btn" data-action="clear-mobile-select" data-kind="driverId">&larr; Back to drivers</button></div>';
-    return driverBackBar + body + '<section class="mobile-record-card"><div class="mobile-driver-head">' + driverAvatar(selected, 'profile') + '<div><span>DRIVER</span><h2>' + esc(selected.name) + '</h2><p>' + esc(selected.phone || 'No phone saved') + '</p></div></div>' +
+    return body + '<section class="mobile-record-card"><div class="mobile-driver-head">' + driverAvatar(selected, 'profile') + '<div><span>DRIVER</span><h2>' + esc(selected.name) + '</h2><p>' + esc(selected.phone || 'No phone saved') + '</p></div></div>' +
       '<div class="mobile-line-grid">' + mobileLine('Email', selected.email || 'Optional') + mobileLine('License', selected.license) + mobileLine('License expiry', selected.licenseExpiry) + mobileLine('Insurance', selected.insuranceProvider || 'Not saved') + mobileLine('Insurance expiry', selected.insuranceExpiry || 'Not saved') + mobileLine('Assigned car', vehicle ? vehicle.unitNumber + ' - ' + vehicle.make : 'Unassigned') + '</div>' +
       '<div class="mobile-action-row"><button class="btn btn-primary" data-action="edit-driver" data-id="' + selected.id + '">Update driver</button><button class="btn btn-soft" data-action="driver-details" data-id="' + selected.id + '">Documents</button><a class="btn btn-soft" href="tel:' + esc(selected.phone || '') + '">Call</a></div>' +
       (lease ? '<div class="mobile-related-card"><span>Active lease</span><b>' + esc(vehicle?.unitNumber || 'Vehicle') + '</b><small>' + money(lease.monthlyRent) + ' monthly - ' + money(leaseRentSummary(lease).pending) + ' open</small></div>' : '<div class="mobile-related-card"><span>Lease</span><b>No active lease</b><small>Use Leases to assign one car and rent setup.</small></div>') +
       '</section>';
+  }
+
+  function renderMobileTrips() {
+    if (isOwner()) return forbidden();
+    if (ui.form === 'trip') return mobileWorkForm('Trip or revenue', tripForm());
+    var records = scope(state.trips).slice().sort(function (a, b) { return String(b.startDate || '').localeCompare(String(a.startDate || '')); });
+    var selected = ui.mobile.tripId ? records.find(function (trip) { return trip.id === ui.mobile.tripId; }) : null;
+    var canAdd = canCreateOperationalRecord('trip');
+    var openTrips = records.filter(function (trip) { return ['planned', 'in_progress'].indexOf(trip.status) >= 0; });
+    var completedTrips = records.filter(function (trip) { return trip.status === 'completed'; });
+    var revenue = completedTrips.reduce(function (sum, trip) { return sum + Number(trip.tripMoney || 0); }, 0);
+    var body = '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">TRIPS & REVENUE</span><h2>Choose revenue</h2></div>' +
+      '<section class="mobile-metrics inline">' + mobileMetric('Records', number(records.length), 'trip and rental income', 'blue') + mobileMetric('Open', number(openTrips.length), 'planned or active', openTrips.length ? 'amber' : 'green') + mobileMetric('Revenue', money(revenue), 'completed records', 'green') + '</section>' +
+      mobileSelect('tripId', 'Trip or revenue', records, selected?.id || '', function (trip) {
+        return (revenueSource(trip) === 'rent' ? 'Rent - ' : 'Trip - ') + (trip.startDate || 'date pending') + ' - ' + (trip.renterName || trip.endPoint || trip.id);
+      }) +
+      (canAdd ? '<div class="mobile-action-row"><button class="btn btn-primary" data-action="toggle-trip-form">New revenue</button></div>' : '') + '</section>';
+    if (!selected) {
+      return body + '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">RECENT</span><h2>Tap one</h2></div>' +
+        (records.length ? '<div class="mobile-record-list">' + records.slice(0, 10).map(function (trip) {
+          var driver = driverById(trip.driverId);
+          var vehicle = vehicleById(trip.vehicleId);
+          return mobileRecordButton('tripId', trip.id, revenueSource(trip) === 'rent' ? (trip.renterName || 'Vehicle rent') : ((trip.startPoint || 'Start') + ' to ' + (trip.endPoint || 'End')), (driver?.name || 'Driver') + ' - ' + (vehicle?.unitNumber || 'Vehicle'), money(trip.tripMoney), trip.status === 'completed' ? 'success' : '');
+        }).join('') + '</div>' : mobileEmpty('No revenue records', 'Trips and rental income will appear here.')) + '</section>';
+    }
+    var driver = driverById(selected.driverId);
+    var vehicle = vehicleById(selected.vehicleId);
+    var relatedClaims = scope(state.expenses).filter(function (expense) { return expense.tripId === selected.id; });
+    var source = revenueSource(selected);
+    var distance = Math.max(0, Number(selected.endOdometer || 0) - Number(selected.startOdometer || 0));
+    var actions = '';
+    if (source === 'trip' && selected.status === 'planned') actions = '<button class="btn btn-soft" data-action="trip-start" data-id="' + selected.id + '">Start trip</button>';
+    if (source === 'trip' && selected.status === 'in_progress') actions = '<button class="btn btn-primary" data-action="trip-complete" data-id="' + selected.id + '">Complete trip</button>';
+    return body + '<section class="mobile-record-card"><div class="mobile-record-head"><span>' + (source === 'rent' ? 'RENTAL REVENUE' : 'TRIP') + '</span><h2>' + esc(source === 'rent' ? (selected.renterName || 'Vehicle rent') : (selected.startPoint + ' to ' + selected.endPoint)) + '</h2><p>' + esc(selected.status || 'planned') + '</p></div>' +
+      '<div class="mobile-line-grid">' + mobileLine('Driver', driver?.name || 'Unassigned') + mobileLine('Vehicle', vehicle ? vehicle.unitNumber + ' - ' + vehicle.make : 'Unassigned') + mobileLine('Start', selected.startDate) + mobileLine('End', selected.endDate || 'Open') + mobileLine('Mileage', source === 'trip' ? number(distance) + ' mi' : 'Rental period') + mobileLine('Amount', money(selected.tripMoney)) + '</div>' +
+      (actions ? '<div class="mobile-action-row">' + actions + '</div>' : '') +
+      (selected.notes ? '<p class="mobile-note">' + esc(selected.notes) + '</p>' : '') +
+      '<div class="mobile-related-card"><span>Expense claims</span><b>' + number(relatedClaims.length) + ' linked</b><small>' + (relatedClaims.length ? 'Open Claims to review supporting costs.' : 'No expenses are linked to this record.') + '</small></div>' +
+      '</section>';
+  }
+
+  function renderMobileExpenses() {
+    if (isOwner()) return forbidden();
+    if (ui.form === 'expense') return mobileWorkForm('Expense claim', expenseForm());
+    var records = scope(state.expenses).slice().sort(function (a, b) { return String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || '')); });
+    var selected = ui.mobile.expenseId ? records.find(function (expense) { return expense.id === ui.mobile.expenseId; }) : null;
+    var canAdd = canCreateOperationalRecord('expense');
+    var pending = records.filter(function (expense) { return expense.status === 'pending'; });
+    var approved = records.filter(function (expense) { return expense.status === 'approved'; });
+    var total = approved.reduce(function (sum, expense) { return sum + Number(expense.amount || 0); }, 0);
+    var body = '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">EXPENSE CLAIMS</span><h2>Choose claim</h2></div>' +
+      '<section class="mobile-metrics inline">' + mobileMetric('Claims', number(records.length), 'all visible records', 'blue') + mobileMetric('Pending', number(pending.length), 'need review', pending.length ? 'amber' : 'green') + mobileMetric('Approved', money(total), 'approved spend', 'green') + '</section>' +
+      mobileSelect('expenseId', 'Expense claim', records, selected?.id || '', function (expense) { return expense.category + ' - ' + money(expense.amount) + ' - ' + expense.status; }) +
+      (canAdd ? '<div class="mobile-action-row"><button class="btn btn-primary" data-action="toggle-expense-form">New expense</button></div>' : '') + '</section>';
+    if (!selected) {
+      return body + '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">RECENT</span><h2>Tap one</h2></div>' +
+        (records.length ? '<div class="mobile-record-list">' + records.slice(0, 10).map(function (expense) {
+          var driver = driverById(expense.driverId);
+          var vehicle = vehicleById(expense.vehicleId);
+          return mobileRecordButton('expenseId', expense.id, expense.category || 'Expense', (driver?.name || 'Driver') + ' - ' + (vehicle?.unitNumber || 'Vehicle') + ' - ' + (expense.date || 'date pending'), money(expense.amount), expense.status === 'approved' ? 'success' : (expense.status === 'pending' ? 'danger' : ''));
+        }).join('') + '</div>' : mobileEmpty('No expense claims', 'Claims submitted from drivers and admins will appear here.')) + '</section>';
+    }
+    var driver = driverById(selected.driverId);
+    var vehicle = vehicleById(selected.vehicleId);
+    var trip = tripById(selected.tripId);
+    var actions = '<button class="btn btn-primary" data-action="expense-details" data-id="' + selected.id + '">Open details</button>';
+    if (canManageOperations()) actions += '<button class="btn btn-soft" data-action="edit-expense" data-id="' + selected.id + '">Update</button>';
+    if (canManageOperations() && selected.status === 'pending') actions += '<button class="btn btn-soft" data-action="expense-approve" data-id="' + selected.id + '">Approve</button><button class="btn btn-danger-soft" data-action="expense-reject" data-id="' + selected.id + '">Reject</button>';
+    return body + '<section class="mobile-record-card"><div class="mobile-record-head"><span>EXPENSE</span><h2>' + esc(selected.category || 'Expense') + '</h2><p>' + esc(selected.status || 'pending') + '</p></div>' +
+      '<div class="mobile-line-grid">' + mobileLine('Amount', money(selected.amount)) + mobileLine('Driver', driver?.name || 'Unassigned') + mobileLine('Vehicle', vehicle ? vehicle.unitNumber + ' - ' + vehicle.make : 'Unassigned') + mobileLine('Date', selected.date) + mobileLine('Applies to', selected.costSource || (selected.tripId ? 'trip' : 'general')) + mobileLine('Payment', selected.paymentMethod || 'Not recorded') + '</div>' +
+      '<div class="mobile-action-row">' + actions + '</div>' +
+      (trip ? '<div class="mobile-related-card"><span>Related trip</span><b>' + esc(trip.startPoint + ' to ' + trip.endPoint) + '</b><small>' + esc(trip.startDate || 'No date') + '</small></div>' : '') +
+      (selected.description ? '<p class="mobile-note">' + esc(selected.description) + '</p>' : '') + '</section>';
   }
 
   function renderMobileBookings() {
@@ -1831,8 +1909,7 @@
         }).join('') + '</div>' : mobileEmpty('No bookings yet', 'Public booking requests will appear here after customers use /booking.')) + '</section>';
     }
     var vehicle = vehicleById(selected.vehicleId);
-    var bookingBackBar = '<div class="mobile-back-bar"><button class="btn btn-soft mobile-back-btn" data-action="clear-mobile-select" data-kind="bookingId">&larr; Back to bookings</button></div>';
-    return bookingBackBar + body + '<section class="mobile-record-card"><div class="mobile-record-head"><span>BOOKING</span><h2>' + esc(selected.customerName || 'Customer') + '</h2><p>' + esc(selected.bookingCode || selected.id) + '</p></div>' +
+    return body + '<section class="mobile-record-card"><div class="mobile-record-head"><span>BOOKING</span><h2>' + esc(selected.customerName || 'Customer') + '</h2><p>' + esc(selected.bookingCode || selected.id) + '</p></div>' +
       '<div class="mobile-line-grid">' + mobileLine('Phone', selected.phone) + mobileLine('Email', selected.email || 'Optional') + mobileLine('Pickup', selected.pickupDate) + mobileLine('Return', selected.returnDate) + mobileLine('Requested car', vehicle ? vehicle.unitNumber + ' - ' + vehicle.make : selected.vehicleLabel || selected.carType || 'Admin to suggest') + mobileLine('Payment', (selected.paymentStatus || 'pending') + ' - ' + inr(selected.bookingFee || 100)) + '</div>' +
       '<div class="mobile-action-row"><button class="btn btn-primary" data-action="booking-details" data-id="' + selected.id + '">Open details</button><button class="btn btn-soft" data-action="booking-accept" data-id="' + selected.id + '">Accept</button><button class="btn btn-danger-soft" data-action="booking-cancel" data-id="' + selected.id + '">Cancel</button></div>' +
       (selected.notes ? '<p class="mobile-note">' + esc(selected.notes) + '</p>' : '') + '</section>';
@@ -1854,11 +1931,26 @@
     }
     var vehicle = vehicleById(selected.vehicleId);
     var driver = driverById(selected.driverId);
-    var maintenanceBackBar = '<div class="mobile-back-bar"><button class="btn btn-soft mobile-back-btn" data-action="clear-mobile-select" data-kind="maintenanceId">&larr; Back to service</button></div>';
-    return maintenanceBackBar + body + '<section class="mobile-record-card"><div class="mobile-record-head"><span>MAINTENANCE</span><h2>' + esc(selected.type) + '</h2><p>' + esc(vehicle ? vehicle.unitNumber + ' - ' + vehicle.make : 'Vehicle') + '</p></div>' +
+    return body + '<section class="mobile-record-card"><div class="mobile-record-head"><span>MAINTENANCE</span><h2>' + esc(selected.type) + '</h2><p>' + esc(vehicle ? vehicle.unitNumber + ' - ' + vehicle.make : 'Vehicle') + '</p></div>' +
       '<div class="mobile-line-grid">' + mobileLine('Status', selected.status) + mobileLine('Date', selected.date) + mobileLine('Estimate', money(selected.estimate)) + mobileLine('Odometer', number(selected.odometer)) + mobileLine('Driver', driver?.name || 'Unassigned') + mobileLine('Shop', selected.shop || 'Not selected') + '</div>' +
       '<div class="mobile-action-row"><button class="btn btn-primary" data-action="maintenance-details" data-id="' + selected.id + '">Open details</button>' + (canManageOperations() ? '<button class="btn btn-soft" data-action="edit-maintenance" data-id="' + selected.id + '">Update</button>' : '') + '</div>' +
       (selected.description ? '<p class="mobile-note">' + esc(selected.description) + '</p>' : '') + '</section>';
+  }
+
+  function monthlyOwnerSummary(period) {
+    if (!canManage()) return null;
+    var income = scope(state.rentCharges).reduce(function (sum, charge) {
+      return sum + chargePayments(charge).filter(function (payment) { return String(payment.paidAt || '').slice(0, 7) === period; }).reduce(function (amount, payment) { return amount + Number(payment.amount || 0); }, 0);
+    }, 0);
+    var expenses = scope(state.expenses).filter(function (item) { return item.status === 'approved' && String(item.date || '').slice(0, 7) === period; }).reduce(function (sum, item) { return sum + Number(item.amount || 0); }, 0);
+    var maintenance = scope(state.maintenance).filter(function (item) { return ['approved', 'in_progress', 'completed'].indexOf(item.status) >= 0 && String(item.date || '').slice(0, 7) === period; }).reduce(function (sum, item) { return sum + Number(item.estimate || 0); }, 0);
+    return { income: roundMoney(income), expenses: roundMoney(expenses), maintenance: roundMoney(maintenance), net: roundMoney(income - expenses - maintenance) };
+  }
+
+  function monthlyOwnerPanel() {
+    if (!canManage()) return '';
+    var total = monthlyOwnerSummary(ui.incomeMonth);
+    return '<section class="panel monthly-owner-report"><h3>Monthly owner / staff summary</h3><label>Month<input id="income-month" type="month" value="' + esc(ui.incomeMonth) + '"></label><div class="detail-lines">' + detailLine('Rent income received', money(total.income)) + detailLine('Maintenance cost recorded', money(total.maintenance)) + detailLine('Other approved expenses', money(total.expenses)) + detailLine('Net after recorded costs', money(total.net)) + '</div><p>Income uses payment received dates. Costs use their record dates and approved/in-progress/completed maintenance estimates. These internal costs never reduce rent payments or change the renter’s amount due.</p></section>';
   }
 
   function renderMobileReports() {
@@ -1877,7 +1969,7 @@
       { id: 'maintenance', label: 'Maintenance cost' },
       { id: 'net', label: 'Net result' }
     ];
-    return '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">REPORTS</span><h2>Money overview</h2></div>' +
+    return monthlyOwnerPanel() + '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">ALL TIME</span><h2>Money overview</h2></div>' +
       '<section class="mobile-metrics inline">' + mobileMetric('Received', money(total.revenue), 'rent payments', 'blue') + mobileMetric('Open', money(total.openRent), 'rent balance', total.openRent ? 'amber' : 'green') + mobileMetric('Service', money(total.maintenance), 'vehicle cost', 'amber') + mobileMetric('Net', money(total.net), 'after costs', total.net >= 0 ? 'green' : 'danger') + '</section>' +
       '<label class="mobile-record-select"><span>Report view</span><select data-mobile-select="reportView">' + viewOptions.map(function (option) { return '<option value="' + option.id + '"' + (view === option.id ? ' selected' : '') + '>' + option.label + '</option>'; }).join('') + '</select></label>' +
       '</section>' + renderMobileReportDetail(view, vendors, vehicleRows);
@@ -1903,8 +1995,7 @@
     return '<section class="mobile-panel"><div class="mobile-section-title"><span class="eyebrow">VEHICLES</span><h2>' + esc(view === 'maintenance' ? 'Maintenance by car' : view === 'net' ? 'Net by car' : 'Vehicle overview') + '</h2></div>' +
       (rows.length ? '<div class="mobile-record-list">' + rows.slice(0, 30).map(function (row) {
         var value = view === 'maintenance' ? money(row.maintenance) : view === 'net' ? money(row.net) : money(row.rentReceived);
-        var meta = (row.driver?.name || 'Unassigned') + ' - open ' + money(row.openRent);
-        return '<button class="mobile-record-button" data-action="vehicle-details" data-id="' + esc(row.vehicle.id) + '" aria-label="' + esc('Open ' + row.vehicle.unitNumber + ' ' + row.vehicle.make + ', ' + meta) + '"><span><b>' + esc(row.vehicle.unitNumber + ' - ' + row.vehicle.make) + '</b><small>' + esc(meta) + '</small></span><strong>' + value + '</strong></button>';
+        return '<article class="mobile-static-row"><span><b>' + esc(row.vehicle.unitNumber + ' - ' + row.vehicle.make) + '</b><small>' + esc((row.driver?.name || 'Unassigned') + ' - open ' + money(row.openRent)) + '</small></span><strong>' + value + '</strong></article>';
       }).join('') + '</div>' : mobileEmpty('No report records', 'No matching vehicle results for this report view.')) + '</section>';
   }
 
@@ -1979,7 +2070,7 @@
       vehicles: vehicles.length,
       activeVehicles: vehicles.filter(function (x) { return ['available', 'active'].indexOf(x.status) >= 0; }).length,
       activeLeases: leases.filter(function (x) { return x.status === 'active'; }).length,
-      openRent: rentCharges.reduce(function (sum, x) { return sum + chargeBalance(x); }, 0),
+      openRent: roundMoney(leases.reduce(function (sum, lease) { return sum + leaseRentSummary(lease).pending; }, 0) + rentCharges.filter(function (charge) { return !leaseById(charge.leaseId); }).reduce(function (sum, charge) { return sum + chargeBalance(charge); }, 0)),
       pending: expenses.filter(function (x) { return x.status === 'pending'; }).length + maintenance.filter(function (x) { return x.status === 'pending'; }).length,
       revenue: revenue,
       expenses: approvedExpenses,
@@ -1989,7 +2080,185 @@
   }
 
   function kpi(label, value, hint, tone, symbol) {
-    return '<article class="kpi ' + (tone || '') + '"><div class="kpi-icon">' + statIcon(symbol) + '</div><div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong><small>' + esc(hint) + '</small></div></article>';
+    return '<article class="kpi ' + (tone || '') + '"><div class="kpi-icon">' + symbol + '</div><div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong><small>' + esc(hint) + '</small></div></article>';
+  }
+
+  function operationMetric(label, value, hint, tone) {
+    return '<article class="operation-metric ' + esc(tone || '') + '"><span>' + esc(label) + '</span><b>' + esc(value) + '</b><small>' + esc(hint || '') + '</small></article>';
+  }
+
+  function workspaceMiniButton(label, moduleId, kind, recordId, tone) {
+    return '<button type="button" class="mini-btn ' + esc(tone || '') + '" data-action="open-workspace" data-module-target="' + esc(moduleId) + '" data-kind="' + esc(kind || '') + '" data-id="' + esc(recordId || '') + '">' + esc(label) + '</button>';
+  }
+
+  function formWorkspaceButton(label, moduleId, formId, tone, prefill) {
+    var data = prefill || {};
+    return '<button type="button" class="btn ' + esc(tone || 'btn-soft') + '" data-action="open-prefill-form" data-module-target="' + esc(moduleId) + '" data-form-target="' + esc(formId) + '" data-driver-id="' + esc(data.driverId || '') + '" data-vehicle-id="' + esc(data.vehicleId || '') + '" data-trip-id="' + esc(data.tripId || '') + '" data-cost-source="' + esc(data.costSource || '') + '">' + esc(label) + '</button>';
+  }
+
+  function compactFormWorkspaceButton(label, moduleId, formId, tone, prefill) {
+    var data = prefill || {};
+    return '<button type="button" class="mini-btn ' + esc(tone || '') + '" data-action="open-prefill-form" data-module-target="' + esc(moduleId) + '" data-form-target="' + esc(formId) + '" data-driver-id="' + esc(data.driverId || '') + '" data-vehicle-id="' + esc(data.vehicleId || '') + '" data-trip-id="' + esc(data.tripId || '') + '" data-cost-source="' + esc(data.costSource || '') + '">' + esc(label) + '</button>';
+  }
+
+  function activeLeaseWorkspaces() {
+    return scope(state.leases)
+      .filter(function (lease) { return lease.status === 'active'; })
+      .sort(function (a, b) { return String(a.startDate || '').localeCompare(String(b.startDate || '')); });
+  }
+
+  function linkedTripsForLease(lease) {
+    return scope(state.trips).filter(function (trip) {
+      return trip.driverId === lease.driverId || trip.vehicleId === lease.vehicleId;
+    });
+  }
+
+  function linkedExpensesForLease(lease) {
+    return scope(state.expenses).filter(function (expense) {
+      return expense.driverId === lease.driverId || expense.vehicleId === lease.vehicleId;
+    });
+  }
+
+  function linkedMaintenanceForLease(lease) {
+    return scope(state.maintenance).filter(function (item) {
+      return item.driverId === lease.driverId || item.vehicleId === lease.vehicleId;
+    });
+  }
+
+  function leaseDocumentCount(lease) {
+    return state.documents.filter(function (doc) {
+      return doc.vendorId === lease.vendorId && doc.ownerType === 'lease' && doc.ownerId === lease.id;
+    }).length + (lease.leaseDocName ? 1 : 0);
+  }
+
+  function operationLeaseCard(lease) {
+    var driver = driverById(lease.driverId);
+    var vehicle = vehicleById(lease.vehicleId);
+    var summary = leaseRentSummary(lease);
+    var trips = linkedTripsForLease(lease);
+    var expenses = linkedExpensesForLease(lease);
+    var maintenance = linkedMaintenanceForLease(lease);
+    var pendingClaims = expenses.filter(function (expense) { return expense.status === 'pending'; }).length;
+    var openMaintenance = maintenance.filter(function (item) { return ['completed', 'rejected'].indexOf(item.status) < 0; }).length;
+    var nextCharge = summary.nextCharge;
+    var prefill = { driverId: lease.driverId, vehicleId: lease.vehicleId };
+    var rentAction = summary.pending > 0
+      ? '<button type="button" class="mini-btn primary" data-action="rent-for-lease" data-id="' + lease.id + '">Receive rent</button>'
+      : '<span class="operation-chip success">Paid up</span>';
+    return '<article class="operation-lease-card">' +
+      '<header><div><span>ACTIVE LEASE</span><h3>' + esc(driver?.name || 'Unassigned driver') + '</h3><p>' + esc(vehicle ? vehicle.unitNumber + ' - ' + vehicle.make + ' ' + vehicle.model : 'No vehicle assigned') + '</p></div>' + statusBadge(lease.status) + '</header>' +
+      '<div class="operation-card-metrics">' +
+        '<div><span>Open rent</span><b class="' + (summary.pending > 0 ? 'text-danger' : 'text-success') + '">' + money(summary.pending) + '</b><small>' + esc(nextCharge ? 'Next due ' + nextCharge.dueDate : summary.statusLabel) + '</small></div>' +
+        '<div><span>Trips</span><b>' + number(trips.length) + '</b><small>' + esc(number(summary.billableDays) + ' lease days') + '</small></div>' +
+        '<div><span>Claims</span><b>' + number(pendingClaims) + '</b><small>' + esc(number(expenses.length) + ' total claims') + '</small></div>' +
+        '<div><span>Service</span><b>' + number(openMaintenance) + '</b><small>' + esc(number(leaseDocumentCount(lease)) + ' lease docs') + '</small></div>' +
+      '</div>' +
+      '<footer>' + workspaceMiniButton('Open lease', 'leases', 'lease', lease.id, 'primary') + rentAction + compactFormWorkspaceButton('Trip', 'trips', 'trip', '', prefill) + compactFormWorkspaceButton('Claim', 'expenses', 'expense', '', prefill) + compactFormWorkspaceButton('Service', 'maintenance', 'maintenance', '', prefill) + '</footer>' +
+    '</article>';
+  }
+
+  function operationQueueItems() {
+    var items = [];
+    scope(state.rentCharges).filter(function (charge) {
+      return chargeRunningBalance(charge).balance > 0;
+    }).sort(function (a, b) { return String(a.dueDate || '').localeCompare(String(b.dueDate || '')); }).slice(0, 4).forEach(function (charge) {
+      var lease = leaseById(charge.leaseId);
+      if (!lease) return;
+      items.push({
+        tone: charge.dueDate && charge.dueDate < today() ? 'danger' : 'amber',
+        icon: '$',
+        title: 'Rent balance',
+        meta: (driverById(charge.driverId)?.name || 'Driver') + ' - due ' + (charge.dueDate || 'not set'),
+        value: money(chargeRunningBalance(charge).balance),
+        actions: workspaceMiniButton('Lease', 'leases', 'lease', lease.id, 'primary') + '<button type="button" class="mini-btn" data-action="rent-for-lease" data-id="' + lease.id + '">Receive</button>'
+      });
+    });
+    scope(state.bookings).filter(function (booking) {
+      return booking.status !== 'cancelled' && (booking.paymentStatus === 'paid' || ['new', 'confirmed', 'accepted', 'assigned'].indexOf(booking.status) >= 0);
+    }).sort(function (a, b) { return String(a.pickupDate || '').localeCompare(String(b.pickupDate || '')); }).slice(0, 3).forEach(function (booking) {
+      items.push({
+        tone: 'blue',
+        icon: 'BK',
+        title: booking.customerName || 'Customer booking',
+        meta: (booking.pickupDate || 'Pickup pending') + ' to ' + (booking.returnDate || 'return pending'),
+        value: inr(booking.bookingFee || 100),
+        actions: '<button type="button" class="mini-btn primary" data-action="booking-details" data-id="' + booking.id + '">Open</button><button type="button" class="mini-btn" data-action="booking-accept" data-id="' + booking.id + '">Accept</button>'
+      });
+    });
+    scope(state.expenses).filter(function (expense) {
+      return expense.status === 'pending';
+    }).slice(0, 4).forEach(function (expense) {
+      items.push({
+        tone: 'amber',
+        icon: '$',
+        title: expense.category + ' claim',
+        meta: (driverById(expense.driverId)?.name || 'Driver') + ' - ' + (vehicleById(expense.vehicleId)?.unitNumber || 'vehicle'),
+        value: money(expense.amount),
+        actions: '<button type="button" class="mini-btn primary" data-action="expense-details" data-id="' + expense.id + '">Open</button><button type="button" class="mini-btn approve" data-action="expense-approve" data-id="' + expense.id + '">Approve</button><button type="button" class="mini-btn reject" data-action="expense-reject" data-id="' + expense.id + '">Reject</button>'
+      });
+    });
+    scope(state.maintenance).filter(function (item) {
+      return ['pending', 'approved', 'in_progress'].indexOf(item.status) >= 0;
+    }).slice(0, 4).forEach(function (item) {
+      items.push({
+        tone: item.status === 'pending' ? 'amber' : 'blue',
+        icon: 'MT',
+        title: item.type || 'Maintenance',
+        meta: (vehicleById(item.vehicleId)?.unitNumber || 'Vehicle') + ' - ' + (item.shop || 'shop pending'),
+        value: money(item.estimate),
+        actions: '<button type="button" class="mini-btn primary" data-action="maintenance-details" data-id="' + item.id + '">Open</button>' + (item.status === 'pending' ? '<button type="button" class="mini-btn approve" data-action="maintenance-approve" data-id="' + item.id + '">Approve</button><button type="button" class="mini-btn reject" data-action="maintenance-reject" data-id="' + item.id + '">Reject</button>' : '<button type="button" class="mini-btn" data-action="maintenance-complete" data-id="' + item.id + '">Complete</button>')
+      });
+    });
+    return items.slice(0, 8);
+  }
+
+  function operationQueueList(items) {
+    if (!items.length) return '<div class="empty-state compact"><span>OK</span><b>No follow-ups open</b><p>Rent, bookings, claims, and service are clear.</p></div>';
+    return '<div class="operation-queue-list">' + items.map(function (item) {
+      return '<article class="operation-queue-item ' + esc(item.tone || '') + '"><i>' + esc(item.icon) + '</i><div><b>' + esc(item.title) + '</b><small>' + esc(item.meta) + '</small></div><strong>' + esc(item.value) + '</strong><footer>' + item.actions + '</footer></article>';
+    }).join('') + '</div>';
+  }
+
+  function renderOperationsHub() {
+    var activeLeases = activeLeaseWorkspaces();
+    var queue = operationQueueItems();
+    var bookings = scope(state.bookings).filter(function (booking) { return booking.status !== 'cancelled'; });
+    var openClaims = scope(state.expenses).filter(function (expense) { return expense.status === 'pending'; }).length;
+    var openMaintenance = scope(state.maintenance).filter(function (item) { return ['completed', 'rejected'].indexOf(item.status) < 0; }).length;
+    var openRent = activeLeases.reduce(function (sum, lease) { return sum + leaseRentSummary(lease).pending; }, 0);
+    return '<section class="operations-hub">' +
+      '<div class="operations-hub-head"><div><span class="eyebrow">OPERATIONS HUB</span><h2>Daily workspaces</h2></div><div class="hub-head-actions">' + formWorkspaceButton('Start lease', 'leases', 'lease', 'btn-primary') + '<button type="button" class="btn btn-soft" data-module="bookings">Customer bookings</button><button type="button" class="btn btn-soft" data-module="reports">Money report</button></div></div>' +
+      '<div class="operation-metrics">' +
+        operationMetric('Active leases', number(activeLeases.length), 'driver and car pairs', 'blue') +
+        operationMetric('Open rent', money(openRent), 'collect from lease cards', openRent ? 'amber' : 'green') +
+        operationMetric('Claims review', number(openClaims), 'pending approvals', openClaims ? 'amber' : 'green') +
+        operationMetric('Service open', number(openMaintenance), 'pending or approved', openMaintenance ? 'blue' : 'green') +
+        operationMetric('Customer requests', number(bookings.length), 'booking records', bookings.length ? 'teal' : 'green') +
+      '</div>' +
+      '<div class="operations-layout">' +
+        '<div class="operations-main"><div class="operations-section-title"><span class="eyebrow">LEASE WORKSPACES</span><h3>Active driver and vehicle records</h3></div>' +
+          (activeLeases.length ? '<div class="operation-lease-grid">' + activeLeases.slice(0, 6).map(operationLeaseCard).join('') + '</div>' : '<div class="empty-state compact"><span>LS</span><b>No active leases</b><p>Start a lease to connect one driver, one car, rent, trips, claims, service, and documents.</p></div>') +
+        '</div>' +
+        '<aside class="operations-side"><div class="operations-section-title"><span class="eyebrow">FOLLOW-UP QUEUE</span><h3>Rent, CRM, claims, service</h3></div>' + operationQueueList(queue) + '</aside>' +
+      '</div>' +
+    '</section>';
+  }
+
+  function renderDriverWorkspaceHub(driver, lease, vehicle, openRent, openMaintenance) {
+    var trips = scope(state.trips);
+    var expenses = scope(state.expenses);
+    var pendingClaims = expenses.filter(function (expense) { return expense.status === 'pending'; }).length;
+    var prefill = { driverId: driver?.id || currentUser().driverId, vehicleId: vehicle?.id || driver?.vehicleId || '' };
+    return '<section class="driver-workspace-hub">' +
+      '<div class="operations-section-title"><span class="eyebrow">MY WORKSPACE</span><h3>' + esc(vehicle ? vehicle.unitNumber + ' - ' + vehicle.make + ' ' + vehicle.model : 'No active car') + '</h3></div>' +
+      '<div class="driver-workspace-grid">' +
+        workspaceCard('Lease', lease ? 'Active' : 'No active lease', lease ? money(lease.monthlyRent) + ' monthly from ' + lease.startDate : 'Company admin starts the lease.', lease ? openWorkspaceButton('Open lease', 'leases', 'lease', lease.id, 'btn-primary') : '') +
+        workspaceCard('Open rent', money(openRent), lease ? 'Balance through today' : 'No lease balance', lease ? formWorkspaceButton('Send mileage', 'leases', 'mileage', 'btn-soft', prefill) : '') +
+        workspaceCard('Trips', number(trips.length), 'Saved revenue records', formWorkspaceButton('New trip', 'trips', 'trip', 'btn-soft', prefill)) +
+        workspaceCard('Expense claims', number(pendingClaims), number(expenses.length) + ' total claims', formWorkspaceButton('Claim expense', 'expenses', 'expense', 'btn-soft', prefill)) +
+        workspaceCard('Maintenance', number(openMaintenance), 'Open service requests', formWorkspaceButton('Request service', 'maintenance', 'maintenance', 'btn-soft', prefill)) +
+      '</div>' +
+    '</section>';
   }
 
   function renderDashboard() {
@@ -2002,13 +2271,14 @@
     var heroActions = '<button class="btn btn-light" data-module="reports">View reports -></button>';
     return '<div class="hero-strip"><div><span class="eyebrow">' + esc(greeting.toUpperCase()) + '</span><h2>' + esc(user.name.split(' ')[0]) + ', here is your fleet today.</h2><p>' + (countAlerts() ? countAlerts() + ' items need attention.' : 'Everything important is under control.') + '</p></div>' +
       heroActions + '</div>' +
-      renderModuleMenu() +
+      renderOperationsHub() +
       '<div class="kpi-grid">' +
         kpi('Active leases', number(m.activeLeases), 'cars currently assigned', 'blue', 'LS') +
         kpi('Available cars', m.activeVehicles + ' / ' + m.vehicles, 'ready for lease', 'teal', 'VEH') +
         kpi('Open rent', money(m.openRent), 'due or partial balance', m.openRent ? 'amber' : 'green', '$') +
         kpi('Net result', money(m.profit), 'rent minus claims and service', m.profit >= 0 ? 'green' : 'red', 'NET') +
       '</div>' +
+      renderModuleMenu() +
       '<div class="dashboard-grid"><section class="panel span-2"><div class="panel-head"><div><span class="eyebrow">LEASE DESK</span><h3>Active leases</h3></div><button class="link-btn" data-module="leases">Open leases -></button></div>' +
         renderTable(['Lease', 'Driver', 'Vehicle', 'Rent', 'Status'], leases.map(function (lease) {
           var driver = driverById(lease.driverId);
@@ -2037,12 +2307,13 @@
     var maintenance = scope(state.maintenance);
     var openMaintenance = maintenance.filter(function (item) { return ['completed', 'rejected'].indexOf(item.status) < 0; }).length;
     return '<section class="driver-welcome"><div class="driver-welcome-main">' + driverAvatar(driver || { name: user.name }, 'profile') + '<div><span class="eyebrow">DRIVER PORTAL</span><h1>' + esc(user.name) + '</h1><p>Your account shows your current car lease, rent, mileage, documents, and maintenance.</p></div><button class="btn btn-soft" data-action="driver-details" data-id="' + esc(user.driverId) + '">View my record</button></div></section>' +
-      renderModuleMenu() +
+      renderDriverWorkspaceHub(driver, lease, vehicle, openRent, openMaintenance) +
       '<section class="driver-status-grid">' +
         '<button class="driver-status-card blue" data-module="leases"><span>CAR</span><div><b>' + esc(vehicle?.unitNumber || 'None') + '</b><small>Current car</small></div></button>' +
         '<button class="driver-status-card amber" data-module="leases"><span>$</span><div><b>' + money(openRent) + '</b><small>Open rent</small></div></button>' +
         '<button class="driver-status-card teal" data-module="maintenance"><span>MT</span><div><b>' + number(openMaintenance) + '</b><small>Open maintenance requests</small></div></button>' +
-      '</section>';
+      '</section>' +
+      renderModuleMenu();
   }
 
   function renderOwnerDashboard() {
@@ -2205,7 +2476,7 @@
 
   function renderLeases() {
     var user = currentUser();
-    var leases = searchable(scope(state.leases), ['notes', 'status']).slice().sort(function (a, b) { return String(b.startDate || '').localeCompare(String(a.startDate || '')); });
+    var leases = searchable(scope(state.leases), ['notes', 'status']);
     var rentCharges = scope(state.rentCharges).slice().sort(function (a, b) { return String(a.dueDate).localeCompare(String(b.dueDate)); });
     var activeLeases = scope(state.leases).filter(function (lease) { return lease.status === 'active'; });
     var pendingToday = activeLeases.reduce(function (sum, lease) { return sum + leaseRentSummary(lease).pending; }, 0);
@@ -2216,7 +2487,7 @@
       return lease.status === 'active' || rentCharges.some(function (charge) { return charge.leaseId === lease.id; });
     });
     var selectedRentLease = ui.rentLeaseId ? rentLeaseRecords.find(function (lease) { return lease.id === ui.rentLeaseId; }) : null;
-    var selectedRentCharges = selectedRentLease ? leaseBillableCharges(selectedRentLease).slice().reverse() : [];
+    var selectedRentCharges = selectedRentLease ? leaseBillableCharges(selectedRentLease) : [];
     var selectedRentDriver = selectedRentLease ? driverById(selectedRentLease.driverId) : null;
     var selectedRentVehicle = selectedRentLease ? vehicleById(selectedRentLease.vehicleId) : null;
 
@@ -2224,8 +2495,21 @@
       return '<section class="focused-record-page">' + paymentCorrectionForm() + '</section>';
     }
 
-    var leaseLedgerSection = '<section class="panel table-panel lease-ledger-panel"><div class="panel-head"><div><span class="eyebrow">LEASE LEDGER</span><h3>Driver and vehicle assignments</h3></div><button class="btn btn-soft" data-action="toggle-lease-ledger" aria-expanded="' + (ui.leaseLedgerOpen ? 'true' : 'false') + '">' + (ui.leaseLedgerOpen ? 'Hide assignments' : 'Show lease assignments (' + number(leases.length) + ')') + '</button></div>' +
-      (ui.leaseLedgerOpen ? renderTable(['Lease', 'Driver', 'Vehicle', 'Mileage', 'Rent'], leases.map(function (lease) {
+    return pageHeader('Leases & rent', 'One flow connects driver, car, rent, mileage, maintenance, and documents.', headerAction, 'toggle-lease-form') +
+      '<div class="kpi-grid">' +
+        kpi('Active leases', number(activeLeases.length), 'currently assigned cars', 'blue', 'LS') +
+        kpi('Available cars', number(availableCars.length), 'ready to lease', 'teal', 'VEH') +
+        kpi('Monthly bill balance', money(pendingToday), 'billed rent minus received payments', pendingToday ? 'amber' : 'green', '$') +
+        kpi('Documents', number(scope(state.documents).length), 'DL, insurance, lease docs', 'green', 'DOC') +
+      '</div>' +
+      (ui.form === 'lease' ? leaseForm() : '') +
+      (ui.form === 'rent' ? rentForm() : '') +
+      (ui.form === 'return' ? returnForm() : '') +
+      (ui.form === 'mileage' ? mileageForm() : '') +
+      (canAdminLease ? '<section class="lease-action-row"><button class="btn btn-primary" data-action="toggle-lease-form">+ Start lease</button><button class="btn btn-soft" data-action="toggle-rent-form">Receive rent</button><button class="btn btn-soft" data-action="toggle-return-form">Return vehicle</button><button class="btn btn-soft" data-action="toggle-mileage-form">Mileage check</button></section>' : '<section class="lease-action-row"><button class="btn btn-primary" data-action="toggle-mileage-form">Send mileage</button><button class="btn btn-soft" data-module="maintenance">Request maintenance</button></section>') +
+      filters('Search lease notes or status...', ['active', 'closed', 'cancelled']) +
+      '<section class="panel table-panel"><div class="panel-head"><div><span class="eyebrow">LEASE LEDGER</span><h3>Driver and vehicle assignments</h3></div></div>' +
+      renderTable(['Lease', 'Driver', 'Vehicle', 'Mileage', 'Rent'], leases.map(function (lease) {
         var driver = driverById(lease.driverId);
         var vehicle = vehicleById(lease.vehicleId);
         var docs = state.documents.filter(function (doc) { return doc.ownerType === 'lease' && doc.ownerId === lease.id; }).length + (lease.leaseDocName ? 1 : 0);
@@ -2244,22 +2528,8 @@
           '<b class="' + rentDueClass + '">' + money(rentSummary.pending) + '</b><small>' + esc(rentSummary.statusLabel) + '</small><small>' + number(rentSummary.billableDays) + ' days used; ' + money(rentSummary.accrued) + ' earned through ' + esc(rentSummary.cutoff) + '</small><small>' + esc(rentMath) + '</small><small>' + money(lease.monthlyRent) + ' monthly - ' + docs + ' docs</small>',
 
         ];
-      }), 'No lease records yet.') : '') + '</section>';
-
-    return pageHeader('Leases & rent', 'One flow connects driver, car, rent, mileage, maintenance, and documents.', headerAction, 'toggle-lease-form') +
-      '<div class="kpi-grid">' +
-        kpi('Active leases', number(activeLeases.length), 'currently assigned cars', 'blue', 'LS') +
-        kpi('Available cars', number(availableCars.length), 'ready to lease', 'teal', 'VEH') +
-        kpi('Monthly bill balance', money(pendingToday), 'billed rent minus received payments', pendingToday ? 'amber' : 'green', '$') +
-        kpi('Documents', number(scope(state.documents).length), 'DL, insurance, lease docs', 'green', 'DOC') +
-      '</div>' +
-      (ui.form === 'lease' ? leaseForm() : '') +
-      (ui.form === 'rent' ? rentForm() : '') +
-      (ui.form === 'return' ? returnForm() : '') +
-      (ui.form === 'mileage' ? mileageForm() : '') +
-      (canAdminLease ? '<section class="lease-action-row"><button class="btn btn-primary" data-action="toggle-lease-form">+ Start lease</button><button class="btn btn-soft" data-action="toggle-rent-form">Receive rent</button><button class="btn btn-soft" data-action="toggle-return-form">Return vehicle</button><button class="btn btn-soft" data-action="toggle-mileage-form">Mileage check</button></section>' : '<section class="lease-action-row"><button class="btn btn-primary" data-action="toggle-mileage-form">Send mileage</button><button class="btn btn-soft" data-module="maintenance">Request maintenance</button></section>') +
-      filters('Search lease notes or status...', ['active', 'closed', 'cancelled']) +
-      '<section class="panel table-panel rent-ledger-panel"><div class="panel-head"><div><span class="eyebrow">RENT BILLS &amp; PAYMENTS</span><h3>' + esc(selectedRentLease ? (selectedRentDriver?.name || 'Selected lessee') + ' ledger' : 'Choose a lessee to view bills') + '</h3></div>' + (selectedRentLease ? '<button class="btn btn-soft" data-action="clear-rent-lease">Choose another</button>' : '') + '</div>' +
+      }), 'No lease records yet.') + '</section>' +
+      '<section class="panel table-panel rent-ledger-panel"><div class="panel-head"><div><span class="eyebrow">RENT BILLS & PAYMENTS</span><h3>' + esc(selectedRentLease ? (selectedRentDriver?.name || 'Selected lessee') + ' ledger' : 'Choose a lessee to view bills') + '</h3></div>' + (selectedRentLease ? '<button class="btn btn-soft" data-action="clear-rent-lease">Choose another</button>' : '') + '</div>' +
       '<div class="readonly-note rent-help"><b>Click one lessee</b><span>This panel only shows bills and payments for the selected driver. Due date, received date, earned rent, and balance stay separated.</span></div>' +
       '<div class="rent-lessee-list">' + rentLeaseRecords.map(function (lease) {
         var driver = driverById(lease.driverId);
@@ -2277,8 +2547,7 @@
         var driver = driverById(charge.driverId);
         var vehicle = vehicleById(charge.vehicleId);
         charge.status = chargeDisplayStatus(charge);
-        var canRecord = canAdminLease && chargeRunningBalance(charge).balance > 0;
-        var cells = [
+        return [
           '<b>' + esc(charge.period) + '</b><small>Due ' + esc(charge.dueDate) + '</small>',
           '<b>' + esc(charge.dueDate || 'Not set') + '</b><small>Monthly bill: ' + money(charge.amountDue) + '</small>',
           chargeDaysCell(charge),
@@ -2286,37 +2555,37 @@
           chargeReceivedCell(charge),
           chargeReceivedDateCell(charge),
           chargeEarnedBalanceCell(charge),
-          canRecord ? '<span class="row-record-hint">Record payment &rarr;</span>' : statusBadge(charge.status)
+          canAdminLease && chargeRunningBalance(charge).balance > 0 ? '<button class="mini-btn primary" data-action="rent-charge" data-id="' + charge.id + '">Record payment</button>' : statusBadge(charge.status)
         ];
-        return canRecord
-          ? { cells: cells, attrs: 'class="clickable-row" data-action="rent-charge" data-id="' + charge.id + '" title="Record a payment for ' + esc(charge.period) + '"' }
-          : cells;
       }), 'No rent charges for this lessee yet.') +
-      renderPaymentHistory(leaseCharges(selectedRentLease.id)) : '<div class="empty-state compact"><span>LS</span><b>Select a lessee</b><p>Click a driver above to show only that driver&apos;s rent bills and payment history.</p></div>') + '</section>' +
-      leaseLedgerSection;
+      renderPaymentHistory(leaseCharges(selectedRentLease.id)) : '<div class="empty-state compact"><span>LS</span><b>Select a lessee</b><p>Click a driver above to show only that driver&apos;s rent bills and payment history.</p></div>') + '</section>';
   }
 
   function leaseForm() {
     var user = currentUser();
     var lease = ui.editing?.kind === 'lease' ? leaseById(ui.editing.id) : null;
+    var prefill = ui.prefill || {};
+    var prefillDriver = prefill.driverId ? driverById(prefill.driverId) : null;
+    var prefillVehicle = prefill.vehicleId ? vehicleById(prefill.vehicleId) : null;
     var isEdit = Boolean(lease);
-    var vendorId = lease?.vendorId || user.vendorId;
+    var vendorId = lease?.vendorId || prefillDriver?.vendorId || prefillVehicle?.vendorId || user.vendorId;
+    var selectedVehicle = lease ? vehicleById(lease.vehicleId) : prefillVehicle;
     var openDrivers = state.drivers.filter(function (driver) {
       var assignedLease = activeLeaseForDriver(driver.id);
       return driver.vendorId === vendorId && driver.status !== 'inactive' && (!assignedLease || assignedLease.id === lease?.id);
     });
     var openVehicles = state.vehicles.filter(function (vehicle) {
       var assignedLease = activeLeaseForVehicle(vehicle.id);
-      return vehicle.vendorId === vendorId && (vehicle.id === lease?.vehicleId || (['available', 'active'].indexOf(vehicle.status) >= 0 && !assignedLease));
+      return vehicle.vendorId === vendorId && (vehicle.id === lease?.vehicleId || vehicle.id === prefill.vehicleId || (['available', 'active'].indexOf(vehicle.status) >= 0 && !assignedLease));
     });
     return '<form class="form-panel" id="lease-form"><div class="form-head"><div><span class="eyebrow">' + (isEdit ? 'EDIT LEASE' : 'START LEASE') + '</span><h3>' + (isEdit ? 'Correct lease setup' : 'Assign one car to one driver') + '</h3></div><button type="button" class="form-return" data-action="close-form">Return</button></div>' +
       '<div class="readonly-note"><b>' + (isEdit ? 'Lease correction' : 'Single-entry workflow') + '</b><span>' + (isEdit ? 'Use this when start date, monthly rent, due day, car, driver, or start mileage was entered wrong. Existing payment history stays attached to this lease.' : 'Select the existing driver and available car once. Rent, vehicle status, driver assignment, and mileage update from this lease.') + '</span></div>' +
       '<div class="form-grid">' +
-      selectField('Driver', 'driverId', [{ value: '', label: 'Select driver' }].concat(openDrivers.map(function (driver) { return { value: driver.id, label: driver.name + '  -  ' + driver.license }; })), lease?.driverId || '') +
-      selectField('Available car', 'vehicleId', [{ value: '', label: 'Select available car' }].concat(openVehicles.map(function (vehicle) { return { value: vehicle.id, label: vehicle.unitNumber + '  -  ' + vehicle.make + '  -  ' + number(vehicle.mileage) + ' mi' }; })), lease?.vehicleId || '') +
+      selectField('Driver', 'driverId', [{ value: '', label: 'Select driver' }].concat(openDrivers.map(function (driver) { return { value: driver.id, label: driver.name + '  -  ' + driver.license }; })), lease?.driverId || prefill.driverId || '') +
+      selectField('Available car', 'vehicleId', [{ value: '', label: 'Select available car' }].concat(openVehicles.map(function (vehicle) { return { value: vehicle.id, label: vehicle.unitNumber + '  -  ' + vehicle.make + '  -  ' + number(vehicle.mileage) + ' mi' }; })), lease?.vehicleId || prefill.vehicleId || '') +
       field('Start date', 'startDate', lease?.startDate || today(), 'date', true) + field('Expected return date', 'expectedReturnDate', lease?.expectedReturnDate || '', 'date') +
       field('Monthly rent', 'monthlyRent', lease?.monthlyRent || '', 'number', true, '0.01') + field('Deposit', 'deposit', lease?.deposit || '', 'number', false, '0.01') +
-      field('Rent due day', 'rentDueDay', lease?.rentDueDay || '1', 'number', true) + field('Start mileage', 'startOdometer', lease?.startOdometer || '', 'number', true) +
+      field('Rent due day', 'rentDueDay', lease?.rentDueDay || '1', 'number', true) + field('Start mileage', 'startOdometer', lease?.startOdometer || selectedVehicle?.mileage || '', 'number', true) +
       '</div><label>Lease notes<textarea name="notes" placeholder="Terms, deposit, insurance notes, payment rules">' + esc(lease?.notes || '') + '</textarea></label>' +
       proofField(lease?.leaseDocName || '') +
       '<div class="form-actions">' + returnAction('Return to leases') + '<button class="btn btn-primary">' + (isEdit ? 'Save lease changes' : 'Start lease') + '</button></div></form>';
@@ -2373,7 +2642,7 @@
   }
 
   function returnForm() {
-    var selectedLease = ui.editing?.kind === 'return' ? leaseById(ui.editing.id) : null;
+    var selectedLease = ui.editing?.kind === 'return' ? leaseById(ui.editing.id) : leaseById(ui.mobile.leaseId);
     var activeLeases = scope(state.leases).filter(function (lease) { return lease.status === 'active'; });
     return '<form class="form-panel" id="return-form"><div class="form-head"><div><span class="eyebrow">RETURN VEHICLE</span><h3>Close lease and free the car</h3></div><button type="button" class="form-return" data-action="close-form">Return</button></div>' +
       '<div class="form-grid">' +
@@ -2384,9 +2653,9 @@
       })), selectedLease?.id || '') +
       field('Return date', 'returnDate', today(), 'date', true) +
       field('Return mileage', 'returnOdometer', selectedLease ? vehicleById(selectedLease.vehicleId)?.mileage || '' : '', 'number', true) +
-      '</div><label>Return notes<textarea name="notes" placeholder="Condition, damages, final balance, keys, photos"></textarea></label>' +
+      '</div><section id="return-rent-summary" class="panel return-summary" aria-live="polite"></section><label>Return notes<textarea name="notes" placeholder="Condition, damages, final balance, keys, photos"></textarea></label>' +
       proofField('') +
-      '<div class="form-actions">' + returnAction('Return to leases') + '<button class="btn btn-primary">Close lease</button></div></form>';
+      '<div class="form-actions">' + returnAction('Return to leases') + '<button class="btn btn-primary">Confirm vehicle return</button></div></form>';
   }
 
   function mileageForm() {
@@ -2415,13 +2684,15 @@
       (ui.form === 'vehicle' ? vehicleForm() : '') +
       filters('Search unit, make, model, VIN, or plate...', ['available', 'leased', 'maintenance', 'inactive']) +
       '<section class="panel table-panel">' + renderTable(['Vehicle', 'Assigned driver', 'Mileage', 'Finance', 'Status', ''], vehicles.map(function (vehicle) {
+        var lease = activeLeaseForVehicle(vehicle.id);
+        var actions = canManage() ? '<div class="row-actions"><button class="mini-btn primary" data-action="vehicle-details" data-id="' + vehicle.id + '">View details</button><button class="mini-btn" data-action="edit-vehicle" data-id="' + vehicle.id + '">Edit</button><button class="mini-btn" data-action="vehicle-status" data-id="' + vehicle.id + '">Status</button>' + (lease ? '<button class="mini-btn" data-action="open-workspace" data-module-target="leases" data-kind="lease" data-id="' + lease.id + '">Lease</button>' : '') + '</div>' : '';
         return [
           '<div class="entity">' + vehicleThumb(vehicle) + '<span><b>' + esc(vehicle.unitNumber) + '</b><small>' + esc(vehicle.year + ' ' + vehicle.make + ' ' + vehicle.model) + '</small></span></div>',
           esc(driverById(vehicle.driverId)?.name || 'Unassigned'),
           '<b>' + number(vehicle.mileage) + '</b><small>miles</small>',
           '<b>' + money(vehicle.loanBalance) + '</b><small>' + money(vehicle.monthlyPayment) + ' / month</small>',
           statusBadge(vehicle.status),
-          canManage() ? '<div class="row-actions"><button class="mini-btn primary" data-action="vehicle-details" data-id="' + vehicle.id + '">View details</button><button class="mini-btn" data-action="edit-vehicle" data-id="' + vehicle.id + '">Edit</button><button class="mini-btn" data-action="vehicle-status" data-id="' + vehicle.id + '">Status</button></div>' : ''
+          actions
         ];
       }), 'No vehicles found.') + '</section>';
   }
@@ -2455,11 +2726,14 @@
         var vehicle = vehicleById(driver.vehicleId);
         var lease = activeLeaseForDriver(driver.id);
         var expiring = driver.licenseExpiry && new Date(driver.licenseExpiry) < new Date(Date.now() + 1000 * 60 * 60 * 24 * 120);
+        var leaseAction = lease
+          ? '<button class="btn btn-soft" data-action="open-workspace" data-module-target="leases" data-kind="lease" data-id="' + lease.id + '">Open lease</button>'
+          : '<button class="btn btn-soft" data-action="start-lease-driver" data-id="' + driver.id + '">Start lease</button>';
         return '<article class="driver-card"><div class="driver-card-head">' + driverAvatar(driver, 'large') + '<div><h3>' + esc(driver.name) + '</h3><p>' + esc(driver.email) + '</p></div>' + statusBadge(driver.status) + '</div>' +
           '<div class="driver-detail"><span>Assigned vehicle</span><b>' + esc(vehicle ? vehicle.unitNumber + '  -  ' + vehicle.make : 'Unassigned') + '</b></div>' +
           '<div class="driver-detail"><span>License</span><b>' + esc(driver.license) + '</b><small class="' + (expiring ? 'text-danger' : '') + '">Expires ' + esc(driver.licenseExpiry) + '</small></div>' +
           '<div class="driver-summary"><div><b>' + (lease ? money(lease.monthlyRent) : 'No lease') + '</b><span>Monthly rent</span></div><div><b>' + (lease ? money(leaseBalance(lease.id)) : '$0') + '</b><span>Open rent</span></div></div>' +
-          '<div class="card-actions"><button class="btn btn-primary" data-action="driver-details" data-id="' + driver.id + '">View details</button><button class="btn btn-soft" data-action="edit-driver" data-id="' + driver.id + '">Edit</button><button class="btn btn-soft" data-module="leases">Start lease</button><a class="icon-btn" href="tel:' + esc(driver.phone) + '">Call</a></div></article>';
+          '<div class="card-actions"><button class="btn btn-primary" data-action="driver-details" data-id="' + driver.id + '">View details</button><button class="btn btn-soft" data-action="edit-driver" data-id="' + driver.id + '">Edit</button>' + leaseAction + '<a class="icon-btn" href="tel:' + esc(driver.phone) + '">Call</a></div></article>';
       }).join('') + '</div>' + (!drivers.length ? emptyState('No matching drivers', 'Add a driver or change the search.', 'drivers') : '');
   }
 
@@ -2477,7 +2751,7 @@
       field('Address', 'address', driver?.address || '', 'text') + field('Emergency contact', 'emergencyContact', driver?.emergencyContact || '', 'text') +
       '</div><div id="driver-phone-error" class="inline-error" aria-live="polite"></div><div class="upload-section"><div><span class="eyebrow">DRIVER DOCUMENTS</span><h4>Identity and agreement files</h4><p>These records are visible only to the driver and their company administrator.</p></div><div class="upload-grid">' +
         mediaUploadField('Driver photo', 'driverPhoto', 'image/*', 'Clear profile photo  -  up to 5 MB', 5, driver?.driverPhotoName) +
-        mediaUploadField('Driving licence photo', 'licensePhoto', 'image/*', 'Front of licence  -  up to 5 MB', 5, driver?.licensePhotoName) +
+        mediaUploadField('Driving licence', 'licensePhoto', 'image/*,.pdf', 'Licence photo or PDF  -  up to 5 MB', 5, driver?.licensePhotoName) +
         mediaUploadField('Insurance document', 'insuranceDoc', 'image/*,.pdf,.doc,.docx', 'Insurance card or policy file  -  up to 8 MB', 8, driver?.insuranceDocName) +
         mediaUploadField('Driver agreement', 'agreement', 'image/*,.pdf,.doc,.docx', 'Signed image, PDF, or Word file  -  up to 8 MB', 8, driver?.agreementName) +
       '</div></div><div class="form-actions">' + returnAction('Return to drivers') + '<button class="btn btn-primary">' + (isEdit ? 'Save changes' : 'Save driver') + '</button></div></form>';
@@ -2493,8 +2767,24 @@
     return '<div class="vehicle-mark">' + esc(vehicle.make.slice(0, 1)) + '</div>';
   }
 
+  function uploadControl(label, key, accept, hint, maxMb, existingName, proof) {
+    var queued = proof ? pendingProofName : pendingMedia[key]?.name;
+    var id = proof ? 'proof-label' : 'upload-label-' + key;
+    var attributes = proof ? ' data-proof-upload' : ' data-upload-key="' + key + '"';
+    attributes += ' data-max-mb="' + maxMb + '"';
+    function picker(text, camera) {
+      return '<label class="upload-picker"><span>' + text + '</span><input type="file"' + attributes +
+        ' accept="' + (camera ? 'image/*' : accept) + '"' + (camera ? ' capture="environment"' : '') +
+        ' aria-label="' + esc(text + ': ' + label) + '"></label>';
+    }
+    return '<div class="upload-box media-upload"><b>' + esc(label) + '</b><small>' + esc(hint) + '</small>' +
+      '<div class="upload-choices">' + picker(accept.indexOf('video/') === 0 ? 'Choose video' : 'Choose photo / file', false) +
+      (accept.indexOf('image/') >= 0 ? picker('Take photo', true) : '') + '</div>' +
+      '<p class="upload-status" id="' + id + '" role="status" aria-live="polite">' + esc(queued ? 'Ready to save: ' + queued : existingName ? 'Saved: ' + existingName : 'No file selected') + '</p></div>';
+  }
+
   function mediaUploadField(label, key, accept, hint, maxMb, existingName) {
-    return '<label class="upload-box media-upload"><input type="file" data-upload-key="' + key + '" data-max-mb="' + maxMb + '" accept="' + accept + '"><span>FILE</span><b id="upload-label-' + key + '">' + esc(existingName ? 'Saved: ' + existingName : label) + '</b><small>' + esc(existingName ? 'Existing file stays unless replaced. ' + hint : hint) + '</small></label>';
+    return uploadControl(label, key, accept, hint + (accept.indexOf('image/') >= 0 ? '. Larger photos are resized automatically.' : ''), maxMb, existingName, false);
   }
 
   function attachmentTile(label, record, prefix, collection) {
@@ -2513,6 +2803,18 @@
   function proofAttachmentTile(label, record, kind) {
     if (!record.proofName) return '<div class="attachment-card missing"><span>ADD</span><div><b>' + esc(label) + '</b><small>Optional - not attached</small></div></div>';
     return '<button class="attachment-card" data-action="proof" data-id="' + record.id + '" data-kind="' + kind + '"' + (record.proof ? '' : ' disabled') + '><span>FILE</span><div><b>' + esc(label) + '</b><small>' + esc(record.proofName) + '</small></div><em>' + (record.proof ? 'Open' : 'Unavailable') + '</em></button>';
+  }
+
+  function openWorkspaceButton(label, moduleId, kind, recordId, tone) {
+    return '<button type="button" class="btn ' + esc(tone || 'btn-soft') + '" data-action="open-workspace" data-module-target="' + esc(moduleId) + '" data-kind="' + esc(kind || '') + '" data-id="' + esc(recordId || '') + '">' + esc(label) + '</button>';
+  }
+
+  function workspaceCard(label, value, hint, actions) {
+    return '<article class="workspace-card"><span>' + esc(label) + '</span><b>' + esc(value) + '</b><small>' + esc(hint || '') + '</small>' + (actions ? '<div class="workspace-card-actions">' + actions + '</div>' : '') + '</article>';
+  }
+
+  function workspaceSection(title, description, cards) {
+    return '<div class="detail-section entity-workspace"><div><span class="eyebrow">CONNECTED WORKSPACE</span><h3>' + esc(title) + '</h3><p>' + esc(description || '') + '</p></div><div class="workspace-card-grid">' + cards.join('') + '</div></div>';
   }
 
   function mediaTypeFromData(data, fallback) {
@@ -2569,8 +2871,14 @@
       var bookingVendor = vendorById(booking.vendorId);
       var bookingVehicle = vehicleById(booking.vehicleId);
       var payments = state.bookingPayments.filter(function (payment) { return payment.bookingId === booking.id; });
+      var bookingActions = '<div class="detail-actions">' +
+        (booking.phone ? '<a class="btn btn-soft" href="tel:' + esc(booking.phone) + '">Call customer</a>' : '') +
+        (booking.email ? '<a class="btn btn-soft" href="mailto:' + esc(booking.email) + '">Email customer</a>' : '') +
+        (bookingVehicle && canManageOperations() ? openWorkspaceButton('Open vehicle', 'vehicles', 'vehicle', bookingVehicle.id) : '') +
+        (canManageOperations() && booking.status !== 'cancelled' ? '<button class="btn btn-primary" data-action="booking-accept" data-id="' + booking.id + '">Accept booking</button><button class="btn btn-soft" data-action="booking-assigned" data-id="' + booking.id + '">Mark assigned</button><button class="btn btn-danger-soft" data-action="booking-cancel" data-id="' + booking.id + '">Cancel</button>' : '') +
+      '</div>';
       return '<div class="detail-backdrop"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="Booking details"><header><div><span class="eyebrow">PUBLIC BOOKING</span><h2>' + esc(booking.bookingCode || booking.id) + '</h2><p>' + esc(bookingVendor?.companyName || 'Fleet') + '  -  ' + esc(booking.paymentStatus || 'pending') + '</p></div><button data-action="close-details" aria-label="Close details">X</button></header>' +
-        (canManageOperations() && booking.status !== 'cancelled' ? '<div class="detail-actions"><button class="btn btn-primary" data-action="booking-accept" data-id="' + booking.id + '">Accept booking</button><button class="btn btn-soft" data-action="booking-assigned" data-id="' + booking.id + '">Mark assigned</button><button class="btn btn-danger-soft" data-action="booking-cancel" data-id="' + booking.id + '">Cancel</button></div>' : '') +
+        bookingActions +
         '<div class="detail-lines">' +
           detailLine('Customer', booking.customerName) + detailLine('Phone', booking.phone) + detailLine('Email', booking.email) +
           detailLine('Requested car', bookingVehicle ? bookingVehicle.unitNumber + '  -  ' + bookingVehicle.make + ' ' + bookingVehicle.model : booking.vehicleLabel || booking.carType || 'Admin to suggest') +
@@ -2596,10 +2904,29 @@
       if (!driver || (!ownDriverRecord && (!canManageOperations() || driver.vendorId !== detailUser.vendorId))) return '';
       var vehicle = vehicleById(driver.vehicleId);
       var vendor = vendorById(driver.vendorId);
+      var driverLease = activeLeaseForDriver(driver.id);
+      var driverTrips = scope(state.trips).filter(function (trip) { return trip.driverId === driver.id; });
+      var driverExpenses = scope(state.expenses).filter(function (expense) { return expense.driverId === driver.id; });
+      var driverMaintenance = scope(state.maintenance).filter(function (item) { return item.driverId === driver.id; });
+      var driverRentOpen = driverLease ? leaseRentSummary(driverLease).pending : 0;
+      var driverActions = '<div class="detail-actions">' +
+        (!ownDriverRecord && canManageOperations() ? '<button class="btn btn-soft" data-action="edit-driver" data-id="' + driver.id + '">Update driver</button>' : '') +
+        (driverLease ? openWorkspaceButton('Open lease ledger', 'leases', 'lease', driverLease.id, 'btn-primary') : (!ownDriverRecord && canManageOperations() ? '<button class="btn btn-primary" data-action="start-lease-driver" data-id="' + driver.id + '">Start lease</button>' : '')) +
+        (driver.phone ? '<a class="btn btn-soft" href="tel:' + esc(driver.phone) + '">Call</a>' : '') +
+        (driver.email ? '<a class="btn btn-soft" href="mailto:' + esc(driver.email) + '">Email</a>' : '') +
+      '</div>';
+      var driverWorkspace = workspaceSection('Driver workspace', 'Current lease, rent, revenue, claims, and service records for this driver.', [
+        workspaceCard('Active lease', driverLease ? (vehicle?.unitNumber || 'Vehicle') : 'No active lease', driverLease ? money(driverLease.monthlyRent) + ' monthly - ' + money(driverRentOpen) + ' open' : 'Use Start lease to assign one car and rent setup.', driverLease ? openWorkspaceButton('Open ledger', 'leases', 'lease', driverLease.id) : ''),
+        workspaceCard('Trips & revenue', number(driverTrips.length), 'Revenue records linked to this driver.', openWorkspaceButton('Open trips', 'trips', '', '')),
+        workspaceCard('Expense claims', number(driverExpenses.length), number(driverExpenses.filter(function (expense) { return expense.status === 'pending'; }).length) + ' pending review', openWorkspaceButton('Open claims', 'expenses', '', '')),
+        workspaceCard('Maintenance', number(driverMaintenance.length), number(driverMaintenance.filter(function (item) { return ['completed', 'rejected'].indexOf(item.status) < 0; }).length) + ' open service records', openWorkspaceButton('Open service', 'maintenance', '', ''))
+      ]);
       return '<div class="detail-backdrop"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="Driver details"><header><div><span class="eyebrow">' + driverBilingual('DRIVER RECORD', 'à¤¡à¥à¤°à¤¾à¤‡à¤µà¤° à¤°à¤¿à¤•à¥‰à¤°à¥à¤¡') + '</span><h2>' + esc(driver.name) + '</h2><p>' + esc(vendor?.companyName || 'Company') + '</p></div><button data-action="close-details" aria-label="Close details">X</button></header>' +
+        driverActions +
         '<div class="detail-profile">' + driverAvatar(driver, 'profile') + '<div><h3>' + esc(driver.name) + '</h3><p>' + esc(driver.email) + '  -  ' + esc(driver.phone) + '</p>' + statusBadge(driver.status) + '</div></div>' +
         (ownDriverRecord ? '<div class="readonly-note"><b>Read-only driver record</b><span>Your documents can only be changed by your company administrator.</span></div>' : '') +
         '<div class="detail-lines">' + detailLine(driverBilingual('Driving licence', 'à¤¡à¥à¤°à¤¾à¤‡à¤µà¤¿à¤‚à¤— à¤²à¤¾à¤‡à¤¸à¥‡à¤‚à¤¸'), driver.license) + detailLine(driverBilingual('Licence expiry', 'à¤²à¤¾à¤‡à¤¸à¥‡à¤‚à¤¸ à¤¸à¤®à¤¾à¤ªà¥à¤¤à¤¿'), driver.licenseExpiry) + detailLine('Insurance provider', driver.insuranceProvider) + detailLine('Insurance policy', driver.insurancePolicy) + detailLine('Insurance expiry', driver.insuranceExpiry) + detailLine(driverBilingual('Assigned vehicle', 'à¤¨à¤¿à¤°à¥à¤§à¤¾à¤°à¤¿à¤¤ à¤µà¤¾à¤¹à¤¨'), vehicle ? vehicle.unitNumber + '  -  ' + vehicle.make + ' ' + vehicle.model : driverBilingual('Unassigned', 'à¤¨à¤¿à¤°à¥à¤§à¤¾à¤°à¤¿à¤¤ à¤¨à¤¹à¥€à¤‚')) + detailLine(driverBilingual('Address', 'à¤ªà¤¤à¤¾'), driver.address) + detailLine(driverBilingual('Emergency contact', 'à¤†à¤ªà¤¾à¤¤à¤•à¤¾à¤²à¥€à¤¨ à¤¸à¤‚à¤ªà¤°à¥à¤•'), driver.emergencyContact) + '</div>' +
+        driverWorkspace +
         '<div class="detail-section"><div><span class="eyebrow">' + driverBilingual('DOCUMENTS', 'à¤¦à¤¸à¥à¤¤à¤¾à¤µà¥‡à¤œà¤¼') + '</span><h3>' + driverBilingual('DL, insurance, and agreement', 'à¤¡à¥€à¤à¤², à¤¬à¥€à¤®à¤¾ à¤”à¤° à¤¸à¤®à¤à¥Œà¤¤à¤¾') + '</h3></div><div class="attachment-grid">' + attachmentTile(driverBilingual('Driver photo', 'à¤¡à¥à¤°à¤¾à¤‡à¤µà¤° à¤«à¥‹à¤Ÿà¥‹'), driver, 'driverPhoto', 'drivers') + attachmentTile(driverBilingual('Driving licence photo', 'à¤¡à¥à¤°à¤¾à¤‡à¤µà¤¿à¤‚à¤— à¤²à¤¾à¤‡à¤¸à¥‡à¤‚à¤¸ à¤«à¥‹à¤Ÿà¥‹'), driver, 'licensePhoto', 'drivers') + attachmentTile('Insurance document', driver, 'insuranceDoc', 'drivers') + attachmentTile(driverBilingual('Driver agreement', 'à¤¡à¥à¤°à¤¾à¤‡à¤µà¤° à¤¸à¤®à¤à¥Œà¤¤à¤¾'), driver, 'agreement', 'drivers') + '</div></div>' +
       '</section></div>';
     }
@@ -2607,9 +2934,27 @@
       var vehicleRecord = vehicleById(ui.detail.id);
       if (!vehicleRecord || !canManageOperations() || vehicleRecord.vendorId !== currentUser().vendorId) return '';
       var assigned = driverById(vehicleRecord.driverId);
+      var vehicleLease = activeLeaseForVehicle(vehicleRecord.id);
+      var vehicleCharges = scope(state.rentCharges).filter(function (charge) { return charge.vehicleId === vehicleRecord.id; });
+      var vehiclePayments = rentPaymentEntries(vehicleCharges);
+      var vehicleExpenses = scope(state.expenses).filter(function (expense) { return expense.vehicleId === vehicleRecord.id; });
+      var vehicleMaintenance = scope(state.maintenance).filter(function (item) { return item.vehicleId === vehicleRecord.id; });
+      var vehicleReadings = scope(state.mileageReadings).filter(function (reading) { return reading.vehicleId === vehicleRecord.id; });
+      var vehicleActions = '<div class="detail-actions"><button class="btn btn-primary" data-action="edit-vehicle" data-id="' + vehicleRecord.id + '">Update vehicle</button><button class="btn btn-soft" data-action="vehicle-status" data-id="' + vehicleRecord.id + '">Change status</button>' +
+        (assigned ? '<button class="btn btn-soft" data-action="driver-details" data-id="' + assigned.id + '">Open driver</button>' : '') +
+        (vehicleLease ? openWorkspaceButton('Open lease ledger', 'leases', 'lease', vehicleLease.id) : '') +
+      '</div>';
+      var vehicleWorkspace = workspaceSection('Vehicle workspace', 'Assignment, lease money, mileage, claims, and service for this car.', [
+        workspaceCard('Active lease', vehicleLease ? (assigned?.name || 'Driver') : 'No active lease', vehicleLease ? money(leaseRentSummary(vehicleLease).pending) + ' open rent balance' : 'Available when no active lease is attached.', vehicleLease ? openWorkspaceButton('Open ledger', 'leases', 'lease', vehicleLease.id) : ''),
+        workspaceCard('Payments', number(vehiclePayments.length), 'Rent payments received for this car.', openWorkspaceButton('Open reports', 'reports', '', '')),
+        workspaceCard('Expense claims', number(vehicleExpenses.length), number(vehicleExpenses.filter(function (expense) { return expense.status === 'pending'; }).length) + ' pending review', openWorkspaceButton('Open claims', 'expenses', '', '')),
+        workspaceCard('Maintenance', number(vehicleMaintenance.length), number(vehicleMaintenance.filter(function (item) { return ['completed', 'rejected'].indexOf(item.status) < 0; }).length) + ' open service records', openWorkspaceButton('Open service', 'maintenance', '', '')),
+        workspaceCard('Mileage readings', number(vehicleReadings.length), number(vehicleRecord.mileage) + ' current miles', vehicleLease ? '<button type="button" class="btn btn-soft" data-action="return-for-lease" data-id="' + vehicleLease.id + '">Return car</button>' : '')
+      ]);
       return '<div class="detail-backdrop"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="Vehicle details"><header><div><span class="eyebrow">VEHICLE RECORD</span><h2>' + esc(vehicleRecord.unitNumber) + '</h2><p>' + esc(vehicleRecord.year + ' ' + vehicleRecord.make + ' ' + vehicleRecord.model) + '</p></div><button data-action="close-details" aria-label="Close details">X</button></header>' +
-        '<div class="detail-actions"><button class="btn btn-primary" data-action="edit-vehicle" data-id="' + vehicleRecord.id + '">Edit vehicle</button></div>' +
+        vehicleActions +
         '<div class="detail-lines">' + detailLine('VIN', vehicleRecord.vin) + detailLine('Plate', vehicleRecord.plate) + detailLine('Current mileage', number(vehicleRecord.mileage) + ' miles') + detailLine('Assigned driver', assigned?.name || 'Unassigned') + detailLine('Bought date', vehicleRecord.boughtDate) + detailLine('Status', vehicleRecord.status) + detailLine('Total cost', money(vehicleRecord.totalCost)) + detailLine('Loan balance', money(vehicleRecord.loanBalance)) + detailLine('Monthly payment', money(vehicleRecord.monthlyPayment)) + '</div>' +
+        vehicleWorkspace +
         '<div class="detail-section"><div><span class="eyebrow">VEHICLE MEDIA</span><h3>Condition evidence</h3></div><div class="attachment-grid">' + attachmentTile('Vehicle photo', vehicleRecord, 'vehiclePhoto', 'vehicles') + attachmentTile('Odometer photo', vehicleRecord, 'odometerPhoto', 'vehicles') + attachmentTile('Overview video', vehicleRecord, 'overviewVideo', 'vehicles') + '</div></div>' +
       '</section></div>';
     }
@@ -2618,13 +2963,31 @@
       if (!lease || !canViewOperationalRecord(lease)) return '';
       var leaseDriver = driverById(lease.driverId);
       var leaseVehicle = vehicleById(lease.vehicleId);
-      var charges = leaseBillableCharges(lease).slice().reverse();
+      var charges = leaseBillableCharges(lease);
       var paymentCharges = leaseCharges(lease.id);
       var readings = state.mileageReadings.filter(function (reading) { return reading.leaseId === lease.id; });
       var leaseSummary = leaseRentSummary(lease);
+      var leaseExpenses = scope(state.expenses).filter(function (expense) { return expense.driverId === lease.driverId || expense.vehicleId === lease.vehicleId; });
+      var leaseMaintenance = scope(state.maintenance).filter(function (item) { return item.driverId === lease.driverId || item.vehicleId === lease.vehicleId; });
+      var leaseTrips = scope(state.trips).filter(function (trip) { return trip.driverId === lease.driverId || trip.vehicleId === lease.vehicleId; });
+      var leaseActions = '<div class="detail-actions">' +
+        (canManageOperations() ? '<button class="btn btn-primary" data-action="edit-lease" data-id="' + lease.id + '">Update lease</button>' : '') +
+        (canManageOperations() && leaseSummary.pending > 0 ? '<button class="btn btn-soft" data-action="rent-for-lease" data-id="' + lease.id + '">Collect ' + esc(money(leaseSummary.pending)) + '</button>' : '') +
+        (canManageOperations() && lease.status === 'active' ? '<button class="btn btn-soft" data-action="return-for-lease" data-id="' + lease.id + '">Return vehicle</button>' : '') +
+        (leaseDriver ? '<button class="btn btn-soft" data-action="driver-details" data-id="' + leaseDriver.id + '">Open driver</button>' : '') +
+        (leaseVehicle && canManageOperations() ? '<button class="btn btn-soft" data-action="vehicle-details" data-id="' + leaseVehicle.id + '">Open vehicle</button>' : '') +
+      '</div>';
+      var leaseWorkspace = workspaceSection('Lease workspace', 'Single source for the driver, car, rent, mileage, documents, claims, and service tied to this lease.', [
+        workspaceCard('Rent balance', money(leaseSummary.pending), money(leaseSummary.paid) + ' received from ' + number(paymentCharges.length) + ' bills', canManageOperations() && leaseSummary.pending > 0 ? '<button type="button" class="btn btn-soft" data-action="rent-for-lease" data-id="' + lease.id + '">Receive rent</button>' : ''),
+        workspaceCard('Driver', leaseDriver?.name || 'Unassigned', leaseDriver ? leaseDriver.phone || leaseDriver.email || 'Contact not saved' : 'No driver selected', leaseDriver ? '<button type="button" class="btn btn-soft" data-action="driver-details" data-id="' + leaseDriver.id + '">Open record</button>' : ''),
+        workspaceCard('Vehicle', leaseVehicle?.unitNumber || 'Unassigned', leaseVehicle ? leaseVehicle.make + ' ' + leaseVehicle.model + ' - ' + number(leaseVehicle.mileage) + ' mi' : 'No vehicle selected', leaseVehicle && canManageOperations() ? '<button type="button" class="btn btn-soft" data-action="vehicle-details" data-id="' + leaseVehicle.id + '">Open record</button>' : ''),
+        workspaceCard('Trips & revenue', number(leaseTrips.length), 'Records linked to this driver or vehicle.', openWorkspaceButton('Open trips', 'trips', '', '')),
+        workspaceCard('Claims & service', number(leaseExpenses.length + leaseMaintenance.length), number(leaseExpenses.filter(function (expense) { return expense.status === 'pending'; }).length + leaseMaintenance.filter(function (item) { return item.status === 'pending'; }).length) + ' pending review', openWorkspaceButton('Claims', 'expenses', '', '') + openWorkspaceButton('Service', 'maintenance', '', ''))
+      ]);
       return '<div class="detail-backdrop"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="Lease details"><header><div><span class="eyebrow">LEASE RECORD</span><h2>' + esc(leaseVehicle?.unitNumber || 'Vehicle') + '  -  ' + esc(leaseDriver?.name || 'Driver') + '</h2><p>' + esc(lease.startDate) + '  -  ' + money(lease.monthlyRent) + ' monthly</p></div><button data-action="close-details" aria-label="Close details">X</button></header>' +
-        (canManageOperations() ? '<div class="detail-actions"><button class="btn btn-primary" data-action="edit-lease" data-id="' + lease.id + '">Update lease</button>' + (lease.status === 'active' && leaseSummary.pending > 0 ? '<button class="btn btn-soft" data-action="rent-for-lease" data-id="' + lease.id + '">Collect ' + esc(money(leaseSummary.pending)) + '</button>' : '') + (lease.status === 'active' ? '<button class="btn btn-soft" data-action="return-for-lease" data-id="' + lease.id + '">Return vehicle</button>' : '') + '</div>' : '') +
-        '<div class="detail-lines">' + detailLine('Driver', leaseDriver?.name || 'Unassigned') + detailLine('Vehicle', leaseVehicle ? leaseVehicle.unitNumber + '  -  ' + leaseVehicle.make + ' ' + leaseVehicle.model : 'Unassigned') + detailLine('Start date', lease.startDate) + detailLine('Expected return', lease.expectedReturnDate || 'Month to month') + detailLine('Monthly rent', money(lease.monthlyRent)) + detailLine('Deposit', money(lease.deposit)) + detailLine('Rent due day', lease.rentDueDay) + detailLine('Start mileage', number(lease.startOdometer)) + detailLine('Return mileage', lease.returnOdometer ? number(lease.returnOdometer) : 'Not returned') + detailLine('Total days used', number(leaseSummary.billableDays) + ' through ' + leaseSummary.cutoff) + detailLine('Rent earned through today', money(leaseSummary.accrued)) + detailLine('Total received', money(leaseSummary.paid)) + detailLine('Monthly bill balance', money(leaseSummary.pending)) + '</div>' +
+        leaseActions +
+        '<div class="detail-lines">' + detailLine('Driver', leaseDriver?.name || 'Unassigned') + detailLine('Vehicle', leaseVehicle ? leaseVehicle.unitNumber + '  -  ' + leaseVehicle.make + ' ' + leaseVehicle.model : 'Unassigned') + detailLine('Status', lease.returnDate ? 'Returned' : lease.status) + detailLine('Return date', lease.returnDate || 'Not returned') + detailLine('Start date', lease.startDate) + detailLine('Expected return', lease.expectedReturnDate || 'Month to month') + detailLine('Monthly rent', money(lease.monthlyRent)) + detailLine('Deposit', money(lease.deposit)) + detailLine('Rent due day', lease.rentDueDay) + detailLine('Start mileage', number(lease.startOdometer)) + detailLine('Return mileage', lease.returnOdometer ? number(lease.returnOdometer) : 'Not returned') + detailLine('Total days used', number(leaseSummary.billableDays) + ' through ' + leaseSummary.cutoff) + detailLine('Rent earned through today', money(leaseSummary.accrued)) + detailLine('Total received', money(leaseSummary.paid)) + detailLine('Rent due from renter', money(leaseSummary.pending)) + detailLine('Rent credit owed to renter', money(leaseSummary.credit)) + '</div>' +
+        leaseWorkspace +
         '<div class="detail-section"><div><span class="eyebrow">RENT LEDGER</span><h3>Days, due dates, and payments</h3></div>' +
         renderTable(['Bill period', 'Due date', 'Days counted', 'Rent earned', 'Amount received', 'Payment received date', 'Monthly balance', 'Status'], charges.map(function (charge) {
           charge.status = chargeDisplayStatus(charge);
@@ -2650,8 +3013,16 @@
       var expenseDriver = driverById(expense.driverId);
       var expenseVehicle = vehicleById(expense.vehicleId);
       var expenseTrip = tripById(expense.tripId);
+      var expenseLease = expenseVehicle ? activeLeaseForVehicle(expenseVehicle.id) : (expenseDriver ? activeLeaseForDriver(expenseDriver.id) : null);
+      var expenseActions = '<div class="detail-actions">' +
+        (canManageOperations() ? '<button class="btn btn-primary" data-action="edit-expense" data-id="' + expense.id + '">Update expense</button>' : '') +
+        (canManageOperations() && expense.status === 'pending' ? '<button class="btn btn-soft" data-action="expense-approve" data-id="' + expense.id + '">Approve</button><button class="btn btn-danger-soft" data-action="expense-reject" data-id="' + expense.id + '">Reject</button>' : '') +
+        (expenseDriver ? '<button class="btn btn-soft" data-action="driver-details" data-id="' + expenseDriver.id + '">Open driver</button>' : '') +
+        (expenseVehicle && canManageOperations() ? '<button class="btn btn-soft" data-action="vehicle-details" data-id="' + expenseVehicle.id + '">Open vehicle</button>' : '') +
+        (expenseLease ? openWorkspaceButton('Open lease', 'leases', 'lease', expenseLease.id) : '') +
+      '</div>';
       return '<div class="detail-backdrop"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="Expense details"><header><div><span class="eyebrow">EXPENSE RECORD</span><h2>' + esc(expense.category) + '</h2><p>' + esc(expense.date) + '  -  ' + money(expense.amount) + '</p></div><button data-action="close-details" aria-label="Close details">X</button></header>' +
-        (canManageOperations() ? '<div class="detail-actions"><button class="btn btn-primary" data-action="edit-expense" data-id="' + expense.id + '">Edit expense</button></div>' : '') +
+        expenseActions +
         '<div class="detail-lines">' + detailLine('Amount', money(expense.amount)) + detailLine('Status', expense.status) + detailLine('Driver', expenseDriver?.name || 'Unassigned') + detailLine('Vehicle', expenseVehicle ? expenseVehicle.unitNumber + '  -  ' + expenseVehicle.make : 'Unassigned') + detailLine('Related trip', expenseTrip ? expenseTrip.startPoint + ' -> ' + expenseTrip.endPoint : 'No related trip') + detailLine('Expense applies to', expense.costSource || (expense.tripId ? 'trip' : 'general')) + detailLine('Payment method', expense.paymentMethod) + detailLine('Description', expense.description) + detailLine('Reviewed by', expense.reviewedBy || 'Not reviewed') + '</div>' +
         '<div class="detail-section"><div><span class="eyebrow">OPTIONAL ATTACHMENT</span><h3>Receipt or supporting proof</h3></div><div class="attachment-grid single">' + proofAttachmentTile('Receipt / proof', expense, 'expense') + '</div></div>' +
       '</section></div>';
@@ -2661,8 +3032,17 @@
       if (!canViewOperationalRecord(maintenance)) return '';
       var maintenanceDriver = driverById(maintenance.driverId);
       var maintenanceVehicle = vehicleById(maintenance.vehicleId);
+      var maintenanceLease = maintenanceVehicle ? activeLeaseForVehicle(maintenanceVehicle.id) : (maintenanceDriver ? activeLeaseForDriver(maintenanceDriver.id) : null);
+      var maintenanceActions = '<div class="detail-actions">' +
+        (canManageOperations() ? '<button class="btn btn-primary" data-action="edit-maintenance" data-id="' + maintenance.id + '">Update maintenance</button>' : '') +
+        (canManageOperations() && maintenance.status === 'pending' ? '<button class="btn btn-soft" data-action="maintenance-approve" data-id="' + maintenance.id + '">Approve</button><button class="btn btn-danger-soft" data-action="maintenance-reject" data-id="' + maintenance.id + '">Reject</button>' : '') +
+        (canManageOperations() && maintenance.status === 'approved' ? '<button class="btn btn-soft" data-action="maintenance-complete" data-id="' + maintenance.id + '">Mark complete</button>' : '') +
+        (maintenanceDriver ? '<button class="btn btn-soft" data-action="driver-details" data-id="' + maintenanceDriver.id + '">Open driver</button>' : '') +
+        (maintenanceVehicle && canManageOperations() ? '<button class="btn btn-soft" data-action="vehicle-details" data-id="' + maintenanceVehicle.id + '">Open vehicle</button>' : '') +
+        (maintenanceLease ? openWorkspaceButton('Open lease', 'leases', 'lease', maintenanceLease.id) : '') +
+      '</div>';
       return '<div class="detail-backdrop"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="Maintenance details"><header><div><span class="eyebrow">MAINTENANCE RECORD</span><h2>' + esc(maintenance.type) + '</h2><p>' + esc(maintenance.date) + '  -  ' + money(maintenance.estimate) + '</p></div><button data-action="close-details" aria-label="Close details">X</button></header>' +
-        (canManageOperations() ? '<div class="detail-actions"><button class="btn btn-primary" data-action="edit-maintenance" data-id="' + maintenance.id + '">Edit maintenance</button></div>' : '') +
+        maintenanceActions +
         '<div class="detail-lines">' + detailLine('Estimated cost', money(maintenance.estimate)) + detailLine('Status', maintenance.status) + detailLine('Driver', maintenanceDriver?.name || 'Unassigned') + detailLine('Vehicle', maintenanceVehicle ? maintenanceVehicle.unitNumber + '  -  ' + maintenanceVehicle.make : 'Unassigned') + detailLine('Odometer', number(maintenance.odometer)) + detailLine('Shop', maintenance.shop) + detailLine('Description', maintenance.description) + detailLine('Reviewed by', maintenance.reviewedBy || 'Not reviewed') + detailLine('Created', maintenance.createdAt ? new Date(maintenance.createdAt).toLocaleString() : maintenance.date) + '</div>' +
         '<div class="detail-section"><div><span class="eyebrow">OPTIONAL ATTACHMENT</span><h3>Estimate or supporting proof</h3></div><div class="attachment-grid single">' + proofAttachmentTile('Estimate / proof', maintenance, 'maintenance') + '</div></div>' +
       '</section></div>';
@@ -2699,13 +3079,14 @@
 
   function tripForm() {
     var user = currentUser();
+    var prefill = ui.prefill || {};
     var vendorField = isOwner() ? vendorSelect() : '<input type="hidden" name="vendorId" value="' + esc(user.vendorId) + '">';
-    var driverId = user.role === 'driver' ? user.driverId : '';
+    var driverId = user.role === 'driver' ? user.driverId : (prefill.driverId || '');
     var sourceField = user.role === 'driver' ? '<input type="hidden" name="revenueSource" value="trip">' : selectField('Revenue source', 'revenueSource', [{ value: 'trip', label: 'Trip' }, { value: 'rent', label: 'Vehicle rent' }], 'trip').replace('<select ', '<select id="revenue-source" ');
     return '<form class="form-panel" id="trip-form"><div class="form-head"><div><span class="eyebrow">' + driverBilingual('NEW REVENUE', 'à¤¨à¤ˆ à¤†à¤¯') + '</span><h3>' + driverBilingual('Record trip or rental income', 'à¤¯à¤¾à¤¤à¥à¤°à¤¾ à¤¯à¤¾ à¤•à¤¿à¤°à¤¾à¤¯à¥‡ à¤•à¥€ à¤†à¤¯ à¤¦à¤°à¥à¤œ à¤•à¤°à¥‡à¤‚') + '</h3></div><button type="button" data-action="close-form">X</button></div>' +
       vendorField + '<div class="form-grid">' + sourceField +
       (user.role === 'driver' ? '<input type="hidden" name="driverId" value="' + esc(driverId) + '">' : driverSelect('driverId', driverId)) +
-      vehicleSelect('vehicleId', driverById(driverId)?.vehicleId || '') +
+      vehicleSelect('vehicleId', prefill.vehicleId || driverById(driverId)?.vehicleId || '') +
       '</div><div class="revenue-fields" data-revenue-fields="trip"><div class="form-grid">' +
         field(driverBilingual('Start point', 'à¤ªà¥à¤°à¤¾à¤°à¤‚à¤­ à¤¸à¥à¤¥à¤¾à¤¨'), 'startPoint', '', 'text', true) + field(driverBilingual('End point', 'à¤—à¤‚à¤¤à¤µà¥à¤¯'), 'endPoint', '', 'text', true) +
         field(driverBilingual('Start date', 'à¤ªà¥à¤°à¤¾à¤°à¤‚à¤­ à¤¤à¤¾à¤°à¥€à¤–'), 'startDate', today(), 'date', true) + field(driverBilingual('Start odometer', 'à¤ªà¥à¤°à¤¾à¤°à¤‚à¤­ à¤“à¤¡à¥‹à¤®à¥€à¤Ÿà¤°'), 'startOdometer', '', 'number', true) +
@@ -2741,6 +3122,7 @@
 
   function expenseForm() {
     var user = currentUser();
+    var prefill = ui.prefill || {};
     var vendor = currentVendor() || state.vendors[0];
     var expense = ui.editing?.kind === 'expense' ? expenseById(ui.editing.id) : null;
     var isEdit = Boolean(expense);
@@ -2748,11 +3130,11 @@
     var vendorField = isOwner() ? vendorSelect() : '<input type="hidden" name="vendorId" value="' + esc(user.vendorId) + '">';
     return '<form class="form-panel" id="expense-form"><div class="form-head"><div><span class="eyebrow">' + driverBilingual(isEdit ? 'EDIT CLAIM' : 'NEW CLAIM', isEdit ? 'à¤¦à¤¾à¤µà¤¾ à¤¸à¤‚à¤ªà¤¾à¤¦à¤¿à¤¤ à¤•à¤°à¥‡à¤‚' : 'à¤¨à¤¯à¤¾ à¤¦à¤¾à¤µà¤¾') + '</span><h3>' + driverBilingual(isEdit ? 'Edit expense' : 'Add expense', isEdit ? 'à¤–à¤°à¥à¤š à¤¸à¤‚à¤ªà¤¾à¤¦à¤¿à¤¤ à¤•à¤°à¥‡à¤‚' : 'à¤–à¤°à¥à¤š à¤œà¥‹à¤¡à¤¼à¥‡à¤‚') + '</h3></div><button type="button" data-action="close-form">X</button></div>' +
       vendorField + '<div class="form-grid">' +
-      (user.role === 'driver' ? '<input type="hidden" name="driverId" value="' + esc(user.driverId) + '">' : driverSelect('driverId', expense?.driverId || '')) +
-      vehicleSelect('vehicleId', expense?.vehicleId || (user.role === 'driver' ? driverById(user.driverId)?.vehicleId : '')) +
-      tripSelect(expense?.tripId || '') + selectField(driverBilingual('Category', 'à¤¶à¥à¤°à¥‡à¤£à¥€'), 'category', categories, expense?.category) +
+      (user.role === 'driver' ? '<input type="hidden" name="driverId" value="' + esc(user.driverId) + '">' : driverSelect('driverId', expense?.driverId || prefill.driverId || '')) +
+      vehicleSelect('vehicleId', expense?.vehicleId || prefill.vehicleId || (user.role === 'driver' ? driverById(user.driverId)?.vehicleId : '')) +
+      tripSelect(expense?.tripId || prefill.tripId || '') + selectField(driverBilingual('Category', 'à¤¶à¥à¤°à¥‡à¤£à¥€'), 'category', categories, expense?.category) +
       field(driverBilingual('Amount', 'à¤°à¤¾à¤¶à¤¿'), 'amount', expense?.amount ?? '', 'number', true, '0.01') + field(driverBilingual('Date', 'à¤¤à¤¾à¤°à¥€à¤–'), 'date', expense?.date || today(), 'date', true) +
-      selectField(driverBilingual('Expense applies to', 'à¤–à¤°à¥à¤š à¤•à¤¿à¤¸à¤¸à¥‡ à¤¸à¤‚à¤¬à¤‚à¤§à¤¿à¤¤ à¤¹à¥ˆ'), 'costSource', [{ value: 'trip', label: driverBilingual('Trip', 'à¤¯à¤¾à¤¤à¥à¤°à¤¾') }, { value: 'rent', label: driverBilingual('Vehicle rent', 'à¤µà¤¾à¤¹à¤¨ à¤•à¤¿à¤°à¤¾à¤¯à¤¾') }, { value: 'general', label: driverBilingual('General fleet', 'à¤¸à¤¾à¤®à¤¾à¤¨à¥à¤¯ à¤¬à¥‡à¤¡à¤¼à¤¾') }], expense?.costSource || (expense?.tripId ? 'trip' : 'general')) +
+      selectField(driverBilingual('Expense applies to', 'à¤–à¤°à¥à¤š à¤•à¤¿à¤¸à¤¸à¥‡ à¤¸à¤‚à¤¬à¤‚à¤§à¤¿à¤¤ à¤¹à¥ˆ'), 'costSource', [{ value: 'trip', label: driverBilingual('Trip', 'à¤¯à¤¾à¤¤à¥à¤°à¤¾') }, { value: 'rent', label: driverBilingual('Vehicle rent', 'à¤µà¤¾à¤¹à¤¨ à¤•à¤¿à¤°à¤¾à¤¯à¤¾') }, { value: 'general', label: driverBilingual('General fleet', 'à¤¸à¤¾à¤®à¤¾à¤¨à¥à¤¯ à¤¬à¥‡à¤¡à¤¼à¤¾') }], expense?.costSource || prefill.costSource || (expense?.tripId || prefill.tripId ? 'trip' : 'general')) +
       selectField(driverBilingual('Payment method', 'à¤­à¥à¤—à¤¤à¤¾à¤¨ à¤•à¤¾ à¤¤à¤°à¥€à¤•à¤¾'), 'paymentMethod', [{ value: 'Fleet card', label: driverBilingual('Fleet card', 'à¤«à¥à¤²à¥€à¤Ÿ à¤•à¤¾à¤°à¥à¤¡') }, { value: 'Cash', label: driverBilingual('Cash', 'à¤¨à¤•à¤¦') }, { value: 'Credit card', label: driverBilingual('Credit card', 'à¤•à¥à¤°à¥‡à¤¡à¤¿à¤Ÿ à¤•à¤¾à¤°à¥à¤¡') }, { value: 'Bank', label: driverBilingual('Bank', 'à¤¬à¥ˆà¤‚à¤•') }, { value: 'Other', label: driverBilingual('Other', 'à¤…à¤¨à¥à¤¯') }], expense?.paymentMethod) +
       '</div><label>' + driverBilingual('Description', 'à¤µà¤¿à¤µà¤°à¤£') + '<textarea name="description" placeholder="' + driverBilingual('What was purchased and why?', 'à¤•à¥à¤¯à¤¾ à¤–à¤°à¥€à¤¦à¤¾ à¤—à¤¯à¤¾ à¤”à¤° à¤•à¥à¤¯à¥‹à¤‚?') + '">' + esc(expense?.description || '') + '</textarea></label>' + proofField(expense?.proofName) +
       '<div class="form-actions"><button type="button" class="btn btn-soft" data-action="close-form">' + driverBilingual('Cancel', 'à¤°à¤¦à¥à¤¦ à¤•à¤°à¥‡à¤‚') + '</button><button class="btn btn-primary">' + driverBilingual(isEdit ? 'Save changes' : 'Submit claim', isEdit ? 'à¤¬à¤¦à¤²à¤¾à¤µ à¤¸à¤¹à¥‡à¤œà¥‡à¤‚' : 'à¤¦à¤¾à¤µà¤¾ à¤œà¤®à¤¾ à¤•à¤°à¥‡à¤‚') + '</button></div></form>';
@@ -2778,6 +3160,7 @@
 
   function maintenanceForm() {
     var user = currentUser();
+    var prefill = ui.prefill || {};
     var vendor = currentVendor() || state.vendors[0];
     var maintenance = ui.editing?.kind === 'maintenance' ? maintenanceById(ui.editing.id) : null;
     var isEdit = Boolean(maintenance);
@@ -2785,8 +3168,8 @@
     var vendorField = isOwner() ? vendorSelect() : '<input type="hidden" name="vendorId" value="' + esc(user.vendorId) + '">';
     return '<form class="form-panel" id="maintenance-form"><div class="form-head"><div><span class="eyebrow">' + driverBilingual(isEdit ? 'EDIT SERVICE' : 'SERVICE REQUEST', isEdit ? 'à¤¸à¥‡à¤µà¤¾ à¤¸à¤‚à¤ªà¤¾à¤¦à¤¿à¤¤ à¤•à¤°à¥‡à¤‚' : 'à¤¸à¥‡à¤µà¤¾ à¤…à¤¨à¥à¤°à¥‹à¤§') + '</span><h3>' + driverBilingual(isEdit ? 'Edit maintenance' : 'Report maintenance', isEdit ? 'à¤°à¤–à¤°à¤–à¤¾à¤µ à¤¸à¤‚à¤ªà¤¾à¤¦à¤¿à¤¤ à¤•à¤°à¥‡à¤‚' : 'à¤°à¤–à¤°à¤–à¤¾à¤µ à¤¦à¤°à¥à¤œ à¤•à¤°à¥‡à¤‚') + '</h3></div><button type="button" data-action="close-form">X</button></div>' +
       vendorField + '<div class="form-grid">' +
-      (user.role === 'driver' ? '<input type="hidden" name="driverId" value="' + esc(user.driverId) + '">' : driverSelect('driverId', maintenance?.driverId || '')) +
-      vehicleSelect('vehicleId', maintenance?.vehicleId || (user.role === 'driver' ? driverById(user.driverId)?.vehicleId : '')) +
+      (user.role === 'driver' ? '<input type="hidden" name="driverId" value="' + esc(user.driverId) + '">' : driverSelect('driverId', maintenance?.driverId || prefill.driverId || '')) +
+      vehicleSelect('vehicleId', maintenance?.vehicleId || prefill.vehicleId || (user.role === 'driver' ? driverById(user.driverId)?.vehicleId : '')) +
       selectField(driverBilingual('Service type', 'à¤¸à¥‡à¤µà¤¾ à¤ªà¥à¤°à¤•à¤¾à¤°'), 'type', types, maintenance?.type) + field(driverBilingual('Estimate', 'à¤…à¤¨à¥à¤®à¤¾à¤¨à¤¿à¤¤ à¤²à¤¾à¤—à¤¤'), 'estimate', maintenance?.estimate ?? '', 'number', true, '0.01') +
       field(driverBilingual('Shop', 'à¤µà¤°à¥à¤•à¤¶à¥‰à¤ª'), 'shop', maintenance?.shop || '', 'text') + field(driverBilingual('Odometer', 'à¤“à¤¡à¥‹à¤®à¥€à¤Ÿà¤°'), 'odometer', maintenance?.odometer ?? '', 'number', true) +
       field(driverBilingual('Date', 'à¤¤à¤¾à¤°à¥€à¤–'), 'date', maintenance?.date || today(), 'date', true) +
@@ -2797,7 +3180,7 @@
   function reportKpi(key, label, value, meta, tone, iconText) {
     var active = (ui.reportView || 'vehicle') === key;
     return '<button type="button" class="kpi report-kpi ' + esc(tone || 'blue') + (active ? ' active' : '') + '" data-action="report-view" data-id="' + esc(key) + '">' +
-      '<div class="kpi-icon">' + statIcon(iconText) + '</div><div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong><small>' + esc(meta || '') + '</small></div></button>';
+      '<div class="kpi-icon">' + esc(iconText || '') + '</div><div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong><small>' + esc(meta || '') + '</small></div></button>';
   }
 
   function reportPaymentRows(charges) {
@@ -2971,7 +3354,7 @@
       }, { vendor: vendor, leases: leases.length, activeLeases: leases.filter(function (lease) { return lease.status === 'active'; }).length, revenue: 0, openRent: 0, costs: 0, maintenance: 0, net: 0 });
     });
     var selectedView = ui.reportView || 'vehicle';
-    return pageHeader('Business reports', 'A clean operating view of revenue, claims, service cost, and net result.', '', '') +
+    return pageHeader('Business reports', 'Private operating income, costs, and net result. Rent balances are separate.', '', '') + monthlyOwnerPanel() + '<h3>All-time business totals</h3>' +
       '<div class="kpi-grid reports report-kpi-grid">' +
         reportKpi('rent', 'Rent received', money(total.revenue), 'click for payment details', 'blue', 'LS') +
         reportKpi('open', 'Open rent', money(total.openRent), 'click for due balances', total.openRent ? 'amber' : 'green', '$') +
@@ -3058,18 +3441,13 @@
   }
 
   function proofField(existingName) {
-    var label = existingName ? 'Current: ' + existingName : driverBilingual('Optional receipt, estimate, or photo', 'à¤µà¥ˆà¤•à¤²à¥à¤ªà¤¿à¤• à¤°à¤¸à¥€à¤¦, à¤…à¤¨à¥à¤®à¤¾à¤¨ à¤¯à¤¾ à¤«à¥‹à¤Ÿà¥‹');
-    return '<label class="upload-box"><input type="file" id="proof-input" accept="image/*,.pdf"><span>FILE</span><b id="proof-label">' + esc(label) + '</b><small>Optional - image or PDF up to 1 MB to keep storage light</small></label>';
+    return uploadControl('Receipt or document', 'proof', 'image/*,.pdf', 'Image or PDF up to 1 MB. Large photos are resized automatically.', 1, existingName, true);
   }
 
   function renderTable(headers, rows, empty) {
     if (!rows.length) return '<div class="empty-state compact"><span>NO</span><b>' + esc(empty) + '</b><p>Try changing the filter or add a new record.</p></div>';
     return '<div class="table-wrap"><table><thead><tr>' + headers.map(function (header) { return '<th>' + esc(header) + '</th>'; }).join('') + '</tr></thead><tbody>' +
-      rows.map(function (row) {
-        var cells = Array.isArray(row) ? row : row.cells;
-        var attrs = Array.isArray(row) ? '' : (row.attrs || '');
-        return '<tr' + (attrs ? ' ' + attrs : '') + '>' + cells.map(function (cell) { return '<td>' + cell + '</td>'; }).join('') + '</tr>';
-      }).join('') +
+      rows.map(function (row) { return '<tr>' + row.map(function (cell) { return '<td>' + cell + '</td>'; }).join('') + '</tr>'; }).join('') +
       '</tbody></table></div>';
   }
 
@@ -3168,20 +3546,17 @@
   function bindShell() {
     document.querySelectorAll('[data-module]').forEach(function (button) {
       button.addEventListener('click', function () {
-        var target = button.dataset.module;
-        if (ui.form && ui.module !== target && !window.confirm('Leave this form? Any unsaved changes will be lost.')) return;
-        if (ui.module !== target) ui.scrollPositions[ui.module] = window.scrollY;
-        ui.module = target;
+        ui.module = button.dataset.module;
         ui.query = '';
         ui.status = 'all';
         ui.form = '';
         ui.detail = null;
         ui.editing = null;
+        ui.prefill = null;
         ui.rentLeaseId = '';
         ui.menuOpen = false;
+        window.scrollTo(0, 0);
         render();
-        restoreModuleScroll(target);
-        focusMainHeading();
       });
     });
     document.querySelectorAll('[data-action]').forEach(function (button) {
@@ -3194,7 +3569,6 @@
         ui.detail = null;
         window.scrollTo(0, 0);
         render();
-        focusMainHeading();
       });
     });
     var search = document.getElementById('module-search');
@@ -3214,27 +3588,36 @@
     var status = document.getElementById('status-filter');
     if (status) status.addEventListener('change', function () { ui.status = status.value; render(); });
     bindForms();
-    var proof = document.getElementById('proof-input');
-    if (proof) proof.addEventListener('change', readProof);
+    document.querySelectorAll('[data-proof-upload]').forEach(function (input) { input.addEventListener('change', readProof); });
     document.querySelectorAll('[data-upload-key]').forEach(function (input) {
       input.addEventListener('change', readMediaFile);
     });
+    bindReturnSummary();
+    bindIncomeMonth();
     bindRevenueSource();
     bindDriverPhoneValidation();
-    enhanceMobileInputs();
   }
 
-  function enhanceMobileInputs() {
-    if (!isPhoneLayout()) return;
-    document.querySelectorAll('form input').forEach(function (input) {
-      if (input.dataset.inputmodeSet) return;
-      var name = (input.getAttribute('name') || '').toLowerCase();
-      var type = (input.getAttribute('type') || 'text').toLowerCase();
-      if (/phone|mobile|contact|whatsapp/.test(name)) { input.setAttribute('inputmode', 'tel'); if (type === 'text') input.setAttribute('type', 'tel'); }
-      else if (/email/.test(name)) { input.setAttribute('inputmode', 'email'); }
-      else if (type === 'number' || /amount|rent|deposit|cost|price|estimate|balance|fee|odometer|mileage|limit|payment/.test(name)) { input.setAttribute('inputmode', 'decimal'); }
-      input.dataset.inputmodeSet = '1';
-    });
+  function bindReturnSummary() {
+    var form = document.getElementById('return-form');
+    if (!form) return;
+    var leaseField = form.elements.leaseId, dateField = form.elements.returnDate;
+    dateField.max = today();
+    function update() {
+      var lease = leaseById(leaseField.value);
+      dateField.min = lease?.startDate || '';
+      var output = document.getElementById('return-rent-summary');
+      if (!lease || !dateField.value || dateField.value < lease.startDate || dateField.value > today()) { output.textContent = 'Choose an active lease and a return date between its start date and today.'; return; }
+      var summary = returnRentSummary(lease, dateField.value);
+      output.innerHTML = '<h3>Final rent settlement</h3><p>Final month prorated through ' + esc(dateField.value) + ', including the return day.</p><div class="detail-lines">' + detailLine('Total rent charged', money(summary.billed)) + detailLine('Rent payments received', money(summary.paid)) + detailLine('Rent due from renter', money(summary.pending)) + detailLine('Rent credit owed to renter', money(summary.credit)) + '</div><p>Maintenance and business expenses are excluded. Deposit ' + money(lease.deposit || 0) + ' is tracked separately and is not automatically applied. Confirming marks the lease returned/closed and the car available. Any unpaid rent remains collectible.</p>';
+    }
+    leaseField.addEventListener('change', function () { var lease = leaseById(leaseField.value); form.elements.returnOdometer.value = lease ? vehicleById(lease.vehicleId)?.mileage || lease.startOdometer || '' : ''; update(); });
+    dateField.addEventListener('input', update); dateField.addEventListener('change', update); update();
+  }
+
+  function bindIncomeMonth() {
+    var input = document.getElementById('income-month');
+    if (input) input.addEventListener('change', function () { if (/^\d{4}-\d{2}$/.test(input.value)) { ui.incomeMonth = input.value; render(); } });
   }
 
   function bindDriverPhoneValidation() {
@@ -3292,8 +3675,43 @@
     };
     Object.keys(forms).forEach(function (id) {
       var form = document.getElementById(id);
-      if (form) form.addEventListener('submit', forms[id]);
+      if (form) form.addEventListener('submit', function (event) {
+        var reading = form.querySelector('[data-upload-reading="true"]');
+        if (reading) {
+          event.preventDefault();
+          reading.querySelector('.upload-status').textContent = 'Please wait for the selected file to finish loading, then save.';
+          reading.scrollIntoView({ block: 'center' });
+          return;
+        }
+        forms[id](event);
+      });
     });
+  }
+
+  function openWorkspace(moduleId, kind, recordId, prefill) {
+    if (modules().indexOf(moduleId) < 0) return;
+    ui.module = moduleId;
+    ui.query = '';
+    ui.status = 'all';
+    ui.form = '';
+    ui.detail = null;
+    ui.editing = null;
+    ui.prefill = prefill || null;
+    ui.menuOpen = false;
+    var mobileKey = {
+      lease: 'leaseId',
+      vehicle: 'vehicleId',
+      driver: 'driverId',
+      booking: 'bookingId',
+      trip: 'tripId',
+      expense: 'expenseId',
+      maintenance: 'maintenanceId',
+      vendor: 'vendorId'
+    }[kind];
+    if (mobileKey) ui.mobile[mobileKey] = recordId || '';
+    ui.rentLeaseId = kind === 'lease' ? (recordId || '') : '';
+    window.scrollTo(0, 0);
+    render();
   }
 
   function handleAction(action, recordId, button) {
@@ -3305,18 +3723,20 @@
     if (formMap[action]) {
       var requestedForm = formMap[action];
       if ((requestedForm === 'vendor' && !isOwner()) || (requestedForm !== 'vendor' && !canCreateOperationalRecord(requestedForm))) return;
+      if (requestedForm === 'return') { ui.module = 'leases'; ui.detail = null; }
       ui.form = ui.form === requestedForm ? '' : requestedForm;
       ui.editing = null;
+      ui.prefill = null;
       pendingProof = ''; pendingProofName = '';
       pendingMedia = {};
       render(); return;
     }
-    if (action === 'close-form') { ui.form = ''; ui.editing = null; if (ui.module === 'leases') ui.rentLeaseId = ''; pendingProof = ''; pendingProofName = ''; pendingMedia = {}; render(); return; }
+    if (action === 'close-form') { ui.form = ''; ui.editing = null; ui.prefill = null; if (ui.module === 'leases') ui.rentLeaseId = ''; pendingProof = ''; pendingProofName = ''; pendingMedia = {}; render(); return; }
     if (action === 'close-details') { ui.detail = null; render(); return; }
     if (action === 'close-media') { ui.media = null; render(); return; }
     if (action === 'dismiss-notice') { ui.notice = ''; render(); return; }
     if (action === 'menu') { ui.menuOpen = !ui.menuOpen; render(); return; }
-    if (action === 'logout') { sessionStorage.removeItem('driver_fleet_user'); ui.form = ''; ui.detail = null; ui.media = null; ui.editing = null; ui.notice = ''; render(); return; }
+    if (action === 'logout') { sessionStorage.removeItem('driver_fleet_user'); ui.form = ''; ui.detail = null; ui.media = null; ui.editing = null; ui.prefill = null; ui.notice = ''; render(); return; }
     if (action === 'mobile-select') {
       if (button && button.dataset.kind) {
         ui.mobile[button.dataset.kind] = recordId || '';
@@ -3324,6 +3744,8 @@
           leaseId: 'leases',
           vehicleId: 'vehicles',
           driverId: 'drivers',
+          tripId: 'trips',
+          expenseId: 'expenses',
           bookingId: 'bookings',
           maintenanceId: 'maintenance',
           vendorId: 'vendors'
@@ -3334,11 +3756,47 @@
       window.scrollTo(0, 0);
       return;
     }
-    if (action === 'clear-mobile-select') {
-      if (button && button.dataset.kind) ui.mobile[button.dataset.kind] = '';
-      render();
+    if (action === 'open-workspace') {
+      openWorkspace(button?.dataset.moduleTarget || 'dashboard', button?.dataset.kind || '', recordId || button?.dataset.id || '');
+      return;
+    }
+    if (action === 'open-prefill-form') {
+      var targetModule = button?.dataset.moduleTarget || ui.module || 'dashboard';
+      var targetForm = button?.dataset.formTarget || '';
+      if (modules().indexOf(targetModule) < 0 || !targetForm || !canCreateOperationalRecord(targetForm)) return;
+      var nextPrefill = {};
+      if (button?.dataset.driverId) nextPrefill.driverId = button.dataset.driverId;
+      if (button?.dataset.vehicleId) nextPrefill.vehicleId = button.dataset.vehicleId;
+      if (button?.dataset.tripId) nextPrefill.tripId = button.dataset.tripId;
+      if (button?.dataset.costSource) nextPrefill.costSource = button.dataset.costSource;
+      ui.module = targetModule;
+      ui.query = '';
+      ui.status = 'all';
+      ui.form = targetForm;
+      ui.detail = null;
+      ui.editing = null;
+      ui.prefill = Object.keys(nextPrefill).length ? nextPrefill : null;
+      ui.menuOpen = false;
+      if (targetForm === 'rent') ui.rentLeaseId = '';
+      pendingProof = ''; pendingProofName = '';
+      pendingMedia = {};
       window.scrollTo(0, 0);
-      focusMainHeading();
+      render();
+      return;
+    }
+    if (action === 'start-lease-driver') {
+      var prefillDriver = driverById(recordId);
+      if (!prefillDriver || !canManageOperations() || prefillDriver.vendorId !== currentUser().vendorId) return;
+      var existingLease = activeLeaseForDriver(prefillDriver.id);
+      if (existingLease) {
+        openWorkspace('leases', 'lease', existingLease.id);
+        return;
+      }
+      var linkedVehicle = vehicleById(prefillDriver.vehicleId);
+      var prefillVehicleId = linkedVehicle && ['available', 'active'].indexOf(linkedVehicle.status) >= 0 && !activeLeaseForVehicle(linkedVehicle.id) ? linkedVehicle.id : '';
+      openWorkspace('leases', '', '', { driverId: prefillDriver.id, vehicleId: prefillVehicleId });
+      ui.form = 'lease';
+      render();
       return;
     }
     if (action === 'payment-details' || action === 'edit-payment') {
@@ -3360,7 +3818,7 @@
           alert('This payment was not removed. It may already have been changed or removed.');
           return;
         }
-        ui.form = ''; ui.editing = null; ui.detail = null; ui.rentLeaseId = '';
+        ui.form = ''; ui.editing = null; ui.prefill = null; ui.detail = null; ui.rentLeaseId = '';
         saveState('Payment removed and lease balance recalculated.', true);
         render();
       }
@@ -3373,6 +3831,7 @@
       if (allowed) {
         ui.form = editKind;
         ui.editing = { kind: editKind, id: recordId };
+        ui.prefill = null;
         ui.detail = null;
         pendingProof = ''; pendingProofName = '';
         pendingMedia = {};
@@ -3402,23 +3861,24 @@
     if (action === 'report-view') { ui.reportView = recordId || 'vehicle'; render(); return; }
     if (action === 'select-rent-lease') { ui.rentLeaseId = recordId || ''; render(); return; }
     if (action === 'clear-rent-lease') { ui.rentLeaseId = ''; render(); return; }
-    if (action === 'toggle-lease-ledger') { ui.leaseLedgerOpen = !ui.leaseLedgerOpen; render(); return; }
     if (action === 'expense-details') { ui.detail = { kind: 'expense', id: recordId }; render(); return; }
     if (action === 'maintenance-details') { ui.detail = { kind: 'maintenance', id: recordId }; render(); return; }
     if (action === 'rent-for-lease') {
       var leaseForRent = leaseById(recordId);
+      if (!canManageOperations() || !leaseForRent || leaseForRent.vendorId !== currentUser().vendorId) return;
       var leaseCharge = leaseForRent ? firstOpenCharge(leaseForRent.id) : null;
       var rentSummary = leaseForRent ? leaseRentSummary(leaseForRent) : null;
       if (!leaseCharge || !rentSummary || rentSummary.pending <= 0) {
         alert('No rent due through today. This lease is paid up.');
         return;
       }
+      ui.module = 'leases'; ui.detail = null; ui.media = null;
       ui.form = 'rent';
       ui.editing = { kind: 'rent', id: leaseCharge.id, suggestedAmount: rentSummary.pending };
       pendingProof = ''; pendingProofName = ''; render(); return;
     }
     if (action === 'rent-charge') { ui.form = 'rent'; ui.editing = { kind: 'rent', id: recordId }; pendingProof = ''; pendingProofName = ''; render(); return; }
-    if (action === 'return-for-lease') { ui.form = 'return'; ui.editing = { kind: 'return', id: recordId }; pendingProof = ''; pendingProofName = ''; render(); return; }
+    if (action === 'return-for-lease') { var returningLease = leaseById(recordId); if (!canCreateOperationalRecord('return') || !returningLease || returningLease.vendorId !== currentUser().vendorId || returningLease.status !== 'active') return; ui.module = 'leases'; ui.detail = null; ui.media = null; ui.form = 'return'; ui.editing = { kind: 'return', id: recordId }; pendingProof = ''; pendingProofName = ''; render(); window.scrollTo(0, 0); return; }
     if (action === 'record-media') { openRecordMedia(recordId, button.dataset.kind, button.dataset.field); return; }
     if (action === 'assign-driver') { if (canManageOperations()) assignDriver(recordId); return; }
     if (action === 'trip-start') {
@@ -3463,7 +3923,7 @@
       var vendorAdmin = state.users.find(function (user) { return user.vendorId === vendor.id && user.role === 'vendor_admin'; });
       var vendorLogin = userLoginValue(data.email, data.companyName, uid('vendoradmin'), vendorAdmin?.id);
       if (vendorAdmin) { vendorAdmin.name = data.owner.trim(); vendorAdmin.email = data.email.trim(); vendorAdmin.username = vendorLogin; }
-      ui.form = ''; ui.editing = null; saveState('Vendor details updated.'); render();
+      ui.form = ''; ui.editing = null; ui.prefill = null; saveState('Vendor details updated.'); render();
       return;
     }
     vendor = {
@@ -3475,7 +3935,7 @@
     var vendorLogin = userLoginValue(data.email, data.companyName, uid('vendoradmin'));
     state.vendors.unshift(vendor);
     state.users.push({ id: uid('user'), role: 'vendor_admin', name: data.owner, email: data.email.trim(), username: vendorLogin, password: 'admin123', vendorId: vendor.id, active: true });
-    ui.form = ''; ui.editing = null; saveState('Vendor created. Admin login: ' + vendorLogin + ' / admin123'); render();
+    ui.form = ''; ui.editing = null; ui.prefill = null; saveState('Vendor created. Admin login: ' + vendorLogin + ' / admin123'); render();
   }
 
   function saveVehicle(event) {
@@ -3500,11 +3960,11 @@
         vehicle.driverId = '';
       }
       Object.assign(vehicle, vehicleData);
-      pendingMedia = {}; ui.form = ''; ui.editing = null; saveState('Vehicle details updated. Existing media was preserved.'); render();
+      pendingMedia = {}; ui.form = ''; ui.editing = null; ui.prefill = null; saveState('Vehicle details updated. Existing media was preserved.'); render();
       return;
     }
     state.vehicles.unshift(Object.assign({ id: uid('vehicle'), driverId: '' }, vehicleData));
-    pendingMedia = {}; ui.form = ''; ui.editing = null; saveState('Vehicle and media added to the fleet.'); render();
+    pendingMedia = {}; ui.form = ''; ui.editing = null; ui.prefill = null; saveState('Vehicle and media added to the fleet.'); render();
   }
 
   function saveDriver(event) {
@@ -3541,12 +4001,12 @@
       Object.assign(driver, driverData);
       var driverUser = existingDriverUser;
       if (driverUser) { driverUser.name = data.name.trim(); driverUser.email = data.email.trim(); driverUser.username = driverLogin; driverUser.vendorId = data.vendorId; }
-      pendingMedia = {}; ui.form = ''; ui.editing = null; saveState('Driver details updated. Existing documents were preserved.'); render();
+      pendingMedia = {}; ui.form = ''; ui.editing = null; ui.prefill = null; saveState('Driver details updated. Existing documents were preserved.'); render();
       return;
     }
     state.drivers.unshift(Object.assign({ id: driverId, vehicleId: '', status: 'active' }, driverData));
     state.users.push({ id: uid('user'), role: 'driver', name: data.name, email: data.email.trim(), username: driverLogin, password: 'driver123', vendorId: data.vendorId, driverId: driverId, active: true });
-    pendingMedia = {}; ui.form = ''; ui.editing = null; saveState('Driver added. Login: ' + driverLogin + ' / driver123'); render();
+    pendingMedia = {}; ui.form = ''; ui.editing = null; ui.prefill = null; saveState('Driver added. Login: ' + driverLogin + ' / driver123'); render();
   }
 
   function saveLease(event) {
@@ -3555,6 +4015,7 @@
     data.vendorId = currentUser().vendorId;
     var lease = ui.editing?.kind === 'lease' ? leaseById(ui.editing.id) : null;
     var isEdit = Boolean(lease);
+    if (lease?.returnDate && data.startDate > lease.returnDate) { alert('Lease start date cannot be after its recorded return date.'); return; }
     var driver = driverById(data.driverId);
     var vehicle = vehicleById(data.vehicleId);
     if (!driver || !vehicle) { alert('Select a driver and an available car.'); return; }
@@ -3583,9 +4044,7 @@
         oldVehicle.driverId = '';
         if (oldVehicle.status === 'leased') oldVehicle.status = 'available';
       }
-      driver.vehicleId = vehicle.id;
-      vehicle.driverId = driver.id;
-      vehicle.status = 'leased';
+      if (lease.status === 'active') { driver.vehicleId = vehicle.id; vehicle.driverId = driver.id; vehicle.status = 'leased'; }
       if (Number(vehicle.mileage || 0) === oldStartOdometer || Number(vehicle.mileage || 0) < startOdometer) vehicle.mileage = startOdometer;
       var startReading = state.mileageReadings.find(function (reading) { return reading.leaseId === lease.id && reading.type === 'start'; });
       if (startReading) {
@@ -3601,7 +4060,7 @@
       if (pendingProofName) {
         state.documents.unshift({ id: uid('doc'), vendorId: lease.vendorId, ownerType: 'lease', ownerId: lease.id, type: 'lease_agreement', name: 'Lease agreement update', fileName: pendingProofName, fileData: pendingProof, expiryDate: '', uploadedAt: new Date().toISOString() });
       }
-      pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ensureRentCharges(); saveState('Lease updated. Rent dates, monthly amount, due day, mileage, driver, and car were recalculated.'); render();
+      pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.prefill = null; ensureRentCharges(); saveState('Lease updated. Rent dates, monthly amount, due day, mileage, driver, and car were recalculated.'); render();
       return;
     }
 
@@ -3626,7 +4085,7 @@
     vehicle.driverId = driver.id;
     vehicle.status = 'leased';
     vehicle.mileage = startOdometer;
-    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ensureRentCharges(); saveState('Lease started. Driver, car, rent, and mileage updated together.'); render();
+    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.prefill = null; ensureRentCharges(); saveState('Lease started. Driver, car, rent, and mileage updated together.'); render();
   }
 
   function saveRentPayment(event) {
@@ -3653,7 +4112,7 @@
     if (pendingProofName) {
       state.documents.unshift({ id: uid('doc'), vendorId: charge.vendorId, ownerType: 'rent', ownerId: charge.id, type: 'rent_receipt', name: 'Rent receipt ' + charge.period, fileName: pendingProofName, fileData: pendingProof, expiryDate: '', uploadedAt: new Date().toISOString() });
     }
-    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.rentLeaseId = ''; saveState('Payment recorded with received date, amount, and lease balance updated.'); render();
+    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.prefill = null; ui.rentLeaseId = ''; saveState('Payment recorded with received date, amount, and lease balance updated.'); render();
   }
 
   function savePaymentCorrection(event) {
@@ -3676,7 +4135,7 @@
     };
     removePaymentGroup(group.id);
     applyRentPaymentFromCharge(charge, amount, correctedPayment, batchId);
-    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.rentLeaseId = ''; saveState('Payment corrected and lease balance recalculated.'); render();
+    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.prefill = null; ui.rentLeaseId = ''; saveState('Payment corrected and lease balance recalculated.'); render();
   }
 
   function saveReturnVehicle(event) {
@@ -3684,6 +4143,7 @@
     if (!canCreateOperationalRecord('return')) return;
     var lease = leaseById(data.leaseId);
     if (!lease || lease.vendorId !== currentUser().vendorId || lease.status !== 'active') { alert('Select an active lease.'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data.returnDate || '') || data.returnDate < lease.startDate || data.returnDate > today()) { alert('Return date must be between the lease start date and today.'); return; }
     var returnOdometer = Number(data.returnOdometer || 0);
     if (!returnOdometer || returnOdometer < Number(lease.startOdometer || 0)) { alert('Return mileage must be greater than start mileage.'); return; }
     var driver = driverById(lease.driverId);
@@ -3691,7 +4151,9 @@
     lease.returnDate = data.returnDate || today();
     lease.returnOdometer = returnOdometer;
     lease.status = 'closed';
-    lease.notes = data.notes.trim() || lease.notes;
+    lease.returnBilling = 'prorated';
+    syncLeaseChargesForLease(lease, true);
+    lease.returnNotes = data.notes.trim();
     if (pendingProofName) {
       state.documents.unshift({ id: uid('doc'), vendorId: lease.vendorId, ownerType: 'lease', ownerId: lease.id, type: 'return_condition', name: 'Return condition', fileName: pendingProofName, fileData: pendingProof, expiryDate: '', uploadedAt: new Date().toISOString() });
     }
@@ -3699,9 +4161,10 @@
       id: uid('mile'), vendorId: lease.vendorId, leaseId: lease.id, driverId: lease.driverId, vehicleId: lease.vehicleId,
       date: lease.returnDate, odometer: returnOdometer, type: 'return', notes: 'Vehicle return mileage.'
     });
-    if (vehicle) { vehicle.mileage = returnOdometer; vehicle.status = 'available'; vehicle.driverId = ''; }
+    if (vehicle) { vehicle.mileage = Math.max(Number(vehicle.mileage || 0), returnOdometer); vehicle.status = 'available'; vehicle.driverId = ''; }
     if (driver) driver.vehicleId = '';
-    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; saveState('Vehicle returned. Lease closed and car is available again.'); render();
+    var finalRent = leaseRentSummary(lease);
+    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.prefill = null; ui.mobile.leaseId = lease.id; ui.rentLeaseId = lease.id; saveState('Vehicle returned on ' + lease.returnDate + '. Rent due from renter: ' + money(finalRent.pending) + '. Rent credit owed to renter: ' + money(finalRent.credit) + '. Car is available.'); render();
   }
 
   function saveMileageReading(event) {
@@ -3718,7 +4181,7 @@
       date: data.date || today(), odometer: odometer, type: 'monthly', notes: data.notes.trim()
     });
     if (vehicle) vehicle.mileage = odometer;
-    ui.form = ''; ui.editing = null; saveState('Mileage saved to the active lease and vehicle.'); render();
+    ui.form = ''; ui.editing = null; ui.prefill = null; saveState('Mileage saved to the active lease and vehicle.'); render();
   }
 
   function saveTrip(event) {
@@ -3745,7 +4208,7 @@
       startOdometer: source === 'trip' ? Number(data.startOdometer || 0) : 0, endOdometer: 0, tripMoney: Number(data.tripMoney || 0),
       notes: data.notes.trim(), status: source === 'rent' ? 'completed' : data.status, createdAt: new Date().toISOString()
     });
-    ui.form = ''; saveState(source === 'rent' ? 'Vehicle rent revenue recorded.' : 'Trip created.'); render();
+    ui.form = ''; ui.prefill = null; saveState(source === 'rent' ? 'Vehicle rent revenue recorded.' : 'Trip created.'); render();
   }
 
   function saveExpense(event) {
@@ -3763,11 +4226,11 @@
     };
     if (expense) {
       Object.assign(expense, expenseData);
-      pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; saveState('Expense details updated.'); render();
+      pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.prefill = null; saveState('Expense details updated.'); render();
       return;
     }
     state.expenses.unshift(Object.assign({ id: uid('expense'), status: 'pending', reviewedBy: '', createdAt: new Date().toISOString() }, expenseData));
-    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; saveState('Expense claim saved. Receipt attachment was optional.'); render();
+    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.prefill = null; saveState('Expense claim saved. Receipt attachment was optional.'); render();
   }
 
   function saveMaintenance(event) {
@@ -3786,7 +4249,7 @@
     else state.maintenance.unshift(Object.assign({ id: uid('maint'), status: 'pending', reviewedBy: '', createdAt: new Date().toISOString() }, maintenanceData));
     var vehicle = vehicleById(data.vehicleId);
     if (vehicle && Number(data.odometer) > Number(vehicle.mileage)) vehicle.mileage = Number(data.odometer);
-    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; saveState(maintenance ? 'Maintenance details updated.' : 'Maintenance request saved. Attachment was optional.'); render();
+    pendingProof = ''; pendingProofName = ''; ui.form = ''; ui.editing = null; ui.prefill = null; saveState(maintenance ? 'Maintenance details updated.' : 'Maintenance request saved. Attachment was optional.'); render();
   }
 
   function saveProfile(event) {
@@ -3814,42 +4277,79 @@
     saveState('Platform settings saved.'); render();
   }
 
-  function readProof(event) {
-    var file = event.target.files[0];
-    if (!file) return;
-    if (file.size > 1 * 1024 * 1024) {
-      alert('Please choose an optional receipt or proof file smaller than 1 MB to keep the database light.');
-      event.target.value = ''; return;
-    }
-    var reader = new FileReader();
-    reader.onload = function () {
-      pendingProof = reader.result;
-      pendingProofName = file.name;
-      var label = document.getElementById('proof-label');
-      if (label) label.textContent = file.name;
-    };
-    reader.readAsDataURL(file);
+  function fileAsDataURL(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result); };
+      reader.onerror = reader.onabort = function () { reject(new Error('This file could not be read. Download it to your device and select it again.')); };
+      reader.readAsDataURL(file);
+    });
   }
 
-  function readMediaFile(event) {
-    var input = event.target;
+  async function prepareUpload(file, maxMb) {
+    var maxBytes = maxMb * 1024 * 1024;
+    var photo = /^image\//i.test(file.type) || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name);
+    var heic = /heic|heif/i.test(file.type) || /\.(heic|heif)$/i.test(file.name);
+    if (!file.size) throw new Error('This file is empty. Download the original file and try again.');
+    if (file.size > (photo ? 30 * 1024 * 1024 : maxBytes)) throw new Error('Choose a ' + (photo ? 'photo under 30' : 'file under ' + maxMb) + ' MB. Your previous attachment is unchanged.');
+    var data = await fileAsDataURL(file);
+    var extension = file.name.split('.').pop().toLowerCase();
+    var type = file.type || ({ jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }[extension]) || 'application/octet-stream';
+    if (!file.type) data = data.replace(/^data:[^;,]*/, 'data:' + type);
+    var name = file.name;
+    if (photo && (file.size > maxBytes || heic)) {
+      var picture = await new Promise(function (resolve, reject) {
+        var img = new Image();
+        img.onload = function () { resolve(img); };
+        img.onerror = function () { reject(new Error('This photo format cannot be resized in this browser. Choose a JPEG/PNG photo, or take a new photo.')); };
+        img.src = data;
+      });
+      var ratio = Math.min(1, 2400 / Math.max(picture.naturalWidth, picture.naturalHeight));
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(picture.naturalWidth * ratio));
+      canvas.height = Math.max(1, Math.round(picture.naturalHeight * ratio));
+      var context = canvas.getContext('2d');
+      if (!context) throw new Error('Unable to prepare this photo. Please choose a smaller JPEG.');
+      context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(picture, 0, 0, canvas.width, canvas.height);
+      var quality = .9;
+      do { data = canvas.toDataURL('image/jpeg', quality); quality -= .1; } while ((data.length - data.indexOf(',') - 1) * .75 > maxBytes && quality >= .4);
+      if ((data.length - data.indexOf(',') - 1) * .75 > maxBytes) throw new Error('This photo is still too large. Choose a smaller photo under ' + maxMb + ' MB.');
+      name = name.replace(/\.[^.]+$/, '') + '.jpg'; type = 'image/jpeg';
+    }
+    return { name: name, type: type, data: data };
+  }
+
+  async function readUpload(input, proof) {
     var file = input.files[0];
     if (!file) return;
-    var maxMb = Number(input.dataset.maxMb || 6);
-    if (file.size > maxMb * 1024 * 1024) {
-      alert('Please choose a file smaller than ' + maxMb + ' MB.');
-      input.value = '';
-      return;
+    var box = input.closest('.upload-box');
+    var label = box.querySelector('.upload-status');
+    var ticket = {};
+    box.uploadTicket = ticket;
+    box.dataset.uploadReading = 'true';
+    box.classList.remove('upload-error');
+    label.textContent = 'Loading ' + file.name + '…';
+    try {
+      var result = await prepareUpload(file, Number(input.dataset.maxMb || 5));
+      if (!input.isConnected || box.uploadTicket !== ticket) return;
+      if (proof) { pendingProof = result.data; pendingProofName = result.name; }
+      else pendingMedia[input.dataset.uploadKey] = result;
+      label.textContent = 'Ready to save: ' + result.name + '. Save the form to keep this attachment.';
+    } catch (error) {
+      if (!input.isConnected || box.uploadTicket !== ticket) return;
+      box.classList.add('upload-error');
+      label.textContent = error.message + ' Any previous attachment is unchanged.';
+    } finally {
+      if (box.uploadTicket === ticket) {
+        delete box.dataset.uploadReading;
+        input.value = ''; // Allow retrying the same library file after cancellation or failure.
+      }
     }
-    var key = input.dataset.uploadKey;
-    var reader = new FileReader();
-    reader.onload = function () {
-      pendingMedia[key] = { name: file.name, type: file.type || 'application/octet-stream', data: reader.result };
-      var label = document.getElementById('upload-label-' + key);
-      if (label) label.textContent = 'Uploaded: ' + file.name;
-    };
-    reader.readAsDataURL(file);
   }
+
+  function readProof(event) { readUpload(event.target, true); }
+  function readMediaFile(event) { readUpload(event.target, false); }
 
   function openRecordMedia(recordId, collection, prefix) {
     var records = collection === 'drivers' ? state.drivers : state.vehicles;
@@ -3969,37 +4469,78 @@
     });
   }
 
+  // Height changes include Safari toolbar and keyboard movement. Never rebuild a draft.
+  var lastPhoneLayout = isPhoneLayout();
+  function updateViewport() {
+    var viewport = window.visualViewport;
+    var editing = document.activeElement && document.activeElement.matches('input, select, textarea, [contenteditable="true"]');
+    var keyboardOpen = Boolean(editing && viewport && viewport.scale === 1 && window.innerHeight - viewport.height > 120);
+    document.documentElement.classList.toggle('keyboard-open', keyboardOpen);
+  }
   window.addEventListener('resize', function () {
+    updateViewport();
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function () {
-      if (!isPublicBookingRoute() && currentUser()) render();
+      var phone = isPhoneLayout();
+      if (phone === lastPhoneLayout) return;
+      lastPhoneLayout = phone;
+      // CSS adapts an open form without losing values, focus or selected uploads.
+      if (!isPublicBookingRoute() && currentUser() && !app.querySelector('form') && !ui.detail && !ui.media) render();
     }, 120);
   });
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', updateViewport);
+  document.addEventListener('focusin', updateViewport);
+  document.addEventListener('focusout', function () { setTimeout(updateViewport, 0); });
 
-  function closeTopLayer() {
-    if (ui.media) { ui.media = null; return true; }
-    if (ui.detail) { ui.detail = null; return true; }
-    if (ui.form) { ui.form = ''; ui.editing = null; return true; }
-    if (useMobileStaffInterface()) {
-      var keys = ['leaseId', 'vehicleId', 'driverId', 'bookingId', 'maintenanceId', 'vendorId'];
-      for (var i = 0; i < keys.length; i++) {
-        if (ui.mobile[keys[i]]) { ui.mobile[keys[i]] = ''; return true; }
+  // Lock background scrolling and keep keyboard focus inside the topmost dialog.
+  var modalScroll = 0;
+  var activeDialog = null;
+  var returnFocus = null;
+  document.addEventListener('click', function (event) {
+    var trigger = event.target.closest('[data-action]');
+    if (trigger && !activeDialog) returnFocus = { action: trigger.dataset.action, id: trigger.dataset.id };
+    var more = app.querySelector('.mobile-more[open]');
+    if (more && !more.contains(event.target)) more.open = false;
+  }, true);
+  new MutationObserver(function () {
+    var dialogs = app.querySelectorAll('[role="dialog"]');
+    var dialog = dialogs[dialogs.length - 1] || null;
+    if (dialog && !activeDialog) {
+      modalScroll = window.scrollY;
+      document.body.style.top = '-' + modalScroll + 'px';
+      document.body.classList.add('dialog-open');
+    }
+    if (!dialog && activeDialog) {
+      document.body.classList.remove('dialog-open');
+      document.body.style.top = '';
+      window.scrollTo(0, modalScroll);
+      if (returnFocus) {
+        var trigger = Array.from(app.querySelectorAll('[data-action]')).find(function (node) { return node.dataset.action === returnFocus.action && node.dataset.id === returnFocus.id; });
+        if (trigger) trigger.focus({ preventScroll: true });
       }
     }
-    if (ui.menuOpen) { ui.menuOpen = false; return true; }
-    if (ui.module && ui.module !== 'dashboard') { ui.module = 'dashboard'; return true; }
-    return false;
-  }
-
-  // Hardware/browser Back button: unwind one UI layer at a time instead of leaving the app.
-  try { history.pushState({ dfView: true }, ''); } catch (e) { /* history unavailable */ }
-  window.addEventListener('popstate', function () {
-    if (isPublicBookingRoute() || !currentUser()) return;
-    if (closeTopLayer()) {
-      try { history.pushState({ dfView: true }, ''); } catch (e) { /* ignore */ }
-      render();
-      focusMainHeading();
+    if (dialog && dialog !== activeDialog) {
+      dialog.tabIndex = -1;
+      var first = dialog.querySelector('button, input, select, textarea, a[href]');
+      (first || dialog).focus({ preventScroll: true });
     }
+    activeDialog = dialog;
+  }).observe(app, { childList: true, subtree: true });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') {
+      var more = app.querySelector('.mobile-more[open]');
+      if (more) { more.open = false; more.querySelector('summary').focus(); }
+      if (activeDialog) {
+        var close = activeDialog.querySelector('[data-action="close-media"], [data-action="close-details"], [data-public-action="cancel-test-payment"]');
+        if (close) close.click();
+      }
+    }
+    if (event.key !== 'Tab' || !activeDialog) return;
+    var nodes = Array.from(activeDialog.querySelectorAll('button, a[href], input, select, textarea, [tabindex="0"]')).filter(function (node) { return !node.disabled && node.getClientRects().length; });
+    var first = nodes[0], last = nodes[nodes.length - 1];
+    if (!first) { event.preventDefault(); activeDialog.focus(); return; }
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === activeDialog)) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && (document.activeElement === last || !activeDialog.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
   });
 
   if (!isPublicBookingRoute()) hydrateFromServer();
