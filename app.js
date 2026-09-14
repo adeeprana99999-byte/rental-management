@@ -1128,7 +1128,7 @@
   }
 
   function renderFleet() {
-    const vehicles = filterRecords(db.vehicles, ["unit", "make", "model", "plate", "status"]);
+    const vehicles = filterRecords(db.vehicles.filter(vehicle => ui.fleetArchive === "all" || (ui.fleetArchive === "archived" ? vehicle.status === "inactive" : vehicle.status !== "inactive")), ["unit", "make", "model", "plate", "status"]);
     const selected = vehicleById(ui.vehicleId);
     if (ui.fleetMode === "profile" && selected) {
       return `
@@ -1147,6 +1147,7 @@
           <button class="primary-add" data-action="open-add" data-type="vehicle">+ Vehicle</button>
         </div>
         ${searchBox("Search cars, plates, status")}
+        <nav class="tabs" aria-label="Fleet visibility">${["current", "archived", "all"].map(value => `<button class="${(ui.fleetArchive || "current") === value ? "active" : ""}" data-action="directory-filter" data-type="vehicle" data-filter="${value}">${tabLabel(value)}</button>`).join("")}</nav>
         <div class="directory-list">
           ${vehicles.map((vehicle) => vehicleListButton(vehicle, "")).join("") || emptyBox("No cars match", "Add or search another vehicle.")}
         </div>
@@ -1180,6 +1181,7 @@
           ${rental ? `<button class="primary-add" data-action="edit-contract" data-id="${esc(rental.id)}">Edit contract</button>` : ""}
           ${rental ? `<button class="soft-btn" data-action="change-vehicle" data-id="${esc(rental.id)}">Change vehicle</button>` : vehicle.status === "available" ? `<button class="primary-add" data-action="open-add" data-type="rental" data-vehicle-id="${esc(vehicle.id)}">Assign to customer</button>` : ""}
           ${contextActionMenu(`vehicle-${vehicle.id}`, [
+            { label: vehicle.status === "inactive" ? "Restore vehicle" : "Archive / delete vehicle", action: "manage-record", id: vehicle.id, type: "vehicle" },
             rental
               ? { label: "Record payment", type: "payment", vehicleId: vehicle.id, rentalId: rental.id, customerId: rental.customerId }
               : vehicle.status === "available" ? { label: "Start rental", type: "rental", vehicleId: vehicle.id } : null,
@@ -1288,7 +1290,7 @@
   }
 
   function renderCustomers() {
-    const customers = filterRecords(db.customers, ["name", "phone", "email", "license", "status"]);
+    const customers = filterRecords(db.customers.filter(customer => ui.customerArchive === "all" || (ui.customerArchive === "closed" ? customerClosed(customer) : !customerClosed(customer))), ["name", "phone", "email", "license", "status"]);
     const selected = customerById(ui.customerId);
     if (ui.customerMode === "profile" && selected) {
       return `
@@ -1307,6 +1309,7 @@
           <button class="primary-add" data-action="open-add" data-type="customer">+ Customer</button>
         </div>
         ${searchBox("Search customers, phone, license")}
+        <nav class="tabs" aria-label="Customer visibility">${["current", "closed", "all"].map(value => `<button class="${(ui.customerArchive || "current") === value ? "active" : ""}" data-action="directory-filter" data-type="customer" data-filter="${value}">${value === "closed" ? "Closed / archived" : tabLabel(value)}</button>`).join("")}</nav>
         <div class="directory-list">
           ${customers.map((customer) => customerListButton(customer, "")).join("") || emptyBox("No customers match", "Add or search another customer.")}
         </div>
@@ -1327,7 +1330,8 @@
   function renderCustomerProfile(customer) {
     if (!customerTabs.includes(ui.customerTab)) ui.customerTab = "info";
     const rentals = rentalsForCustomer(customer.id);
-    const active = rentals.find((rental) => rental.status === "active");
+    const openRentals = rentals.filter(rental => ["active", "reserved"].includes(rental.status));
+    const active = openRentals.length === 1 && openRentals[0].status === "active" ? openRentals[0] : null;
     return `
       <header class="profile-header">
         <div class="vehicle-title">
@@ -1341,6 +1345,7 @@
           <button class="primary-add" data-action="open-add" data-type="rental" data-customer-id="${esc(customer.id)}">Assign vehicle</button>
           ${active ? `<button class="soft-btn" data-action="change-vehicle" data-id="${esc(active.id)}">Change vehicle</button>` : ""}
           ${contextActionMenu(`customer-${customer.id}`, [
+            { label: customerClosed(customer) ? "Restore / delete customer" : "Archive / delete customer", action: "manage-record", id: customer.id, type: "customer" },
             { label: "Add rental", type: "rental", customerId: customer.id },
             active ? { label: "Record payment", type: "payment", rentalId: active.id, vehicleId: active.vehicleId, customerId: customer.id } : { label: "Add driver license", type: "document", ownerType: "customer", ownerId: customer.id, documentType: "Driver license" },
             { label: "Set temporary password", action: "reset-customer-password", customerId: customer.id },
@@ -1348,6 +1353,9 @@
           ])}
         </div>
       </header>
+      <section class="simple-section"><h3>Assigned vehicles (${openRentals.length})</h3><p>${openRentals.length > 1 ? "This customer has multiple open contracts. Choose the exact vehicle below to edit, return, or remove an accidental assignment." : "Manage each assignment from its own contract."}</p>
+        ${openRentals.map(rental => `<section class="return-settlement"><h3>${esc(vehicleById(rental.vehicleId)?.unit || "Missing vehicle")} · ${esc(rentalCode(rental))}</h3><p>${esc(rental.status)} · ${shortDate(rental.startDate)} to ${shortDate(rental.endDate)} · Due today: ${money(rentalBalance(rental))}</p><div class="row-actions"><button class="soft-btn" data-action="select-rental" data-id="${esc(rental.id)}">Open contract</button><button class="soft-btn" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button><button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button></div></section>`).join("") || '<p>No open vehicle assignments.</p>'}
+      </section>
       <nav class="tabs">${customerTabs.map((tab) => `<button class="${ui.customerTab === tab ? "active" : ""}" data-action="customer-tab" data-tab="${tab}">${tabLabel(tab)}</button>`).join("")}</nav>
       ${renderCustomerTab(customer, rentals)}
     `;
@@ -1511,6 +1519,7 @@
           </div>
           <div class="profile-actions">
             ${statusBadge(rental.status)}
+            ${rental.cancelledAt ? '<b>Cancelled — assigned by mistake</b>' : rental.status !== "closed" ? `<button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button>` : ""}
             <button class="primary-add" data-action="edit-contract" data-id="${esc(rental.id)}">Edit contract</button>
             <button class="soft-btn" data-action="customer-emails" data-id="${esc(rental.id)}">Customer emails</button>
             ${rental.status === "active" ? `<button class="soft-btn" data-action="change-vehicle" data-id="${esc(rental.id)}">Change vehicle</button>` : ""}
@@ -1534,6 +1543,7 @@
         <section class="detail-grid">
           ${detail("Pickup", rental.pickupLocation)}
           ${detail("Status", rental.returnDate ? "Returned" : rental.status)}
+          ${rental.cancelledAt ? detail("Cancellation reason", rental.cancellationReason) : ""}
           ${detail("Actual return date", rental.returnDate || "Not returned")}${contractBillingDetails(rental)}
           ${detail("Credit above contract", money(RentalMath.summary(rental, db.payments).credit))}
           ${detail("Vehicle", vehicle ? vehicle.unit + " - " + vehicle.make + " " + vehicle.model : "Not assigned")}
@@ -1815,6 +1825,8 @@
   }
 
   function recordTypeLabel(value) {
+    if (value === 'manage-record') return 'Manage record';
+    if (value === 'cancel-assignment') return 'Remove mistaken assignment';
     if (value === 'emails') return 'Customer emails';
     if (value === 'contract') return 'Edit contract';
     if (value === 'change-vehicle') return 'Change vehicle';
@@ -1849,6 +1861,8 @@
   }
 
   function renderForm(type) {
+    if (type === "manage-record") return manageRecordForm();
+    if (type === "cancel-assignment") return cancelAssignmentForm();
     if (type === "emails") return customerEmailsView();
     if (type === "contract") return contractForm();
     if (type === "change-vehicle") return changeVehicleForm();
@@ -1930,6 +1944,67 @@
     return '<h3>Final settlement</h3><p>Rent through ' + esc(date) + ', including the return day: <b>' + money(value.rentCharged) + '</b></p><p>Contract deposit: ' + money(value.deposit) + ' · Received: ' + money(value.received) + '</p><p><b>Amount due from customer: ' + money(value.due) + '</b></p><p>Credit above contract: ' + money(value.credit) + '</p><p>Maintenance and business expenses are excluded. Deposit refunds are settled separately. The car becomes available unless another active rental or service requires it.</p>';
   }
 
+  function customerClosed(customer) {
+    const rentals = rentalsForCustomer(customer.id);
+    if (rentals.some(rental => ["active", "reserved"].includes(rental.status))) return false;
+    return customer.status === "inactive" || customer.status === "closed" || (!customer.keepVisible && rentals.length > 0 && rentals.every(rental => rental.status === "closed"));
+  }
+
+  function recordLinks(type, id) {
+    const field = type === "customer" ? "customerId" : "vehicleId";
+    return ["rentals", "payments", "expenses", "maintenance", "inspections"].some(name => db[name].some(row => row[field] === id))
+      || (type === "vehicle" && db.rentals.some(rental => (rental.vehicleChanges || []).some(change => change.fromVehicleId === id || change.toVehicleId === id)))
+      || db.documents.some(doc => (doc.ownerType === type && doc.ownerId === id) || doc[field] === id);
+  }
+
+  function manageRecordForm() {
+    const { recordType: type, recordId: id } = ui.prefill;
+    const record = type === "customer" ? customerById(id) : vehicleById(id);
+    if (!record) return "";
+    const archived = type === "customer" ? customerClosed(record) : record.status === "inactive";
+    const linked = recordLinks(type, id);
+    return `<form class="record-form" data-form="manage-record">${hiddenField("recordType", type)}${hiddenField("recordId", id)}<h3>${esc(record.name || record.unit)}</h3><p>${linked ? "This record has linked history. Archive it to hide it from the current list while keeping contracts, payments and files accessible." : "This record has no linked contracts, payments or files. You can archive it or permanently delete it."}</p><footer><button type="button" class="soft-btn" data-action="close-modal">Cancel</button><button class="primary-add" name="operation" value="${archived ? "restore" : "archive"}" data-record-operation="${archived ? "restore" : "archive"}">${archived ? "Restore to current list" : "Archive record"}</button>${!linked ? '<button class="danger-btn" name="operation" value="delete" data-record-operation="delete">Permanently delete record</button>' : ""}</footer></form>`;
+  }
+
+  function saveRecordManagement(data) {
+    if (auth?.role !== "staff" || !["customer", "vehicle"].includes(data.recordType)) return;
+    const type = data.recordType, id = data.recordId, field = type === "customer" ? "customerId" : "vehicleId";
+    const record = type === "customer" ? customerById(id) : vehicleById(id);
+    if (!record) throw new Error("This record no longer exists.");
+    if (data.operation !== "restore" && db.rentals.some(rental => rental[field] === id && ["active", "reserved"].includes(rental.status))) throw new Error("Return or cancel the open rental assignments before archiving this record.");
+    if (data.operation === "delete") {
+      if (recordLinks(type, id)) throw new Error("This record has linked history. Archive it instead.");
+      const name = type === "customer" ? "customers" : "vehicles";
+      db[name] = db[name].filter(row => row.id !== id);
+    } else if (data.operation === "archive") { record.status = "inactive"; record.keepVisible = false; }
+    else if (data.operation === "restore") { record.status = type === "customer" ? "active" : "available"; record.keepVisible = true; if (type === "vehicle") syncVehicle(id); }
+    else throw new Error("Choose archive, restore or delete.");
+    addActivity(type, `${record.name || record.unit}: ${data.operation}.`, type, id, {});
+    ui.view = type === "customer" ? "customers" : "fleet";
+    if (type === "customer") { ui.customerMode = "list"; ui.customerArchive = data.operation === "archive" ? "closed" : "current"; }
+    else { ui.fleetMode = "list"; ui.fleetArchive = data.operation === "archive" ? "archived" : "current"; }
+    commit(data.operation === "delete" ? "Unused record deleted." : data.operation === "restore" ? "Record restored." : "Record archived. History preserved.");
+  }
+
+  function cancelAssignmentForm() {
+    const rental = rentalById(ui.prefill.rentalId);
+    if (!rental) return "";
+    const payments = db.payments.filter(payment => payment.rentalId === rental.id);
+    return `<form class="record-form" data-form="cancel-assignment">${hiddenField("rentalId", rental.id)}<h3>${esc(customerById(rental.customerId)?.name)} · ${esc(vehicleById(rental.vehicleId)?.unit)} · ${esc(rentalCode(rental))}</h3><p>Use this only if the car was assigned by mistake and was never rented under this contract. This closes the mistaken assignment, removes its rental charges and releases its vehicle. The original record, files and cancellation reason remain in history.</p>${payments.length ? '<p role="alert">This contract has payment records. Cancellation is blocked to preserve payment history. Check those payments first; use Return vehicle if this was a real rental.</p>' : ''}<label>Reason<textarea name="reason" required></textarea></label><footer><button type="button" class="soft-btn" data-action="close-modal">Keep assignment</button><button class="primary-add" ${payments.length ? 'disabled' : ''}>Confirm mistaken assignment</button></footer></form>`;
+  }
+
+  function saveAssignmentCancellation(data) {
+    const rental = rentalById(data.rentalId);
+    if (auth?.role !== "staff" || !rental || rental.status === "closed") return;
+    if (!cleanText(data.reason)) throw new Error("Enter why this assignment was a mistake.");
+    if (db.payments.some(payment => payment.rentalId === rental.id)) throw new Error("This contract has payments. Resolve those records before cancelling an assignment.");
+    rental.status = "closed"; rental.cancelledAt = new Date().toISOString(); rental.cancellationReason = cleanText(data.reason);
+    syncVehicle(rental.vehicleId);
+    ui.view = "customers"; ui.customerId = rental.customerId; ui.customerMode = "profile";
+    addActivity("rental", `${rentalCode(rental)} cancelled as a mistaken assignment: ${rental.cancellationReason}`, "rental", rental.id, { rentalId: rental.id, vehicleId: rental.vehicleId, customerId: rental.customerId });
+    commit("Mistaken assignment cancelled. Other contracts and their payments are unchanged.");
+  }
+
   function customerEmailsView() {
     const state = ui.emailState;
     if (!state) return '<div class="record-form"><p role="status">Loading email previews and history…</p></div>';
@@ -1981,6 +2056,7 @@
     if (auth?.role !== "staff") return;
     const uploads = await Promise.all([data.driverLicenseFile, data.insuranceFile, data.agreementFile].map(readUpload));
     const rental = rentalById(data.rentalId), customer = customerById(rental?.customerId), vehicle = vehicleById(data.vehicleId);
+    if (rental?.cancelledAt) throw new Error("This mistaken assignment was cancelled. Create a new rental if needed.");
     if (!rental || !customer || !vehicle || rental.vehicleId !== data.previousVehicleId) throw new Error("The linked records changed. Reopen Edit contract and try again.");
     const changing = vehicle.id !== rental.vehicleId, previous = vehicleById(rental.vehicleId);
     if (![rental.status, ...(rental.status === "reserved" ? ["active"] : [])].includes(data.status)) throw new Error("Use Return vehicle to close a contract.");
@@ -2163,6 +2239,7 @@
     const selectedCustomer = customerById(prefill.customerId || "");
     return `<form data-form="rental" class="record-form"><div class="form-grid">
       ${selectField("Assign to customer", "customerId", [{ value: "", label: "New customer — enter details below" }, ...db.customers.map(customer => ({ value: customer.id, label: `${customer.name} / ${customer.phone || customer.email || customer.id}` }))], selectedCustomer?.id || "")}
+      <label class="wide"><span><input type="checkbox" name="additionalRental"> I intend to assign an additional vehicle if this customer already has an open rental.</span></label>
       ${lockedVehicle ? hiddenField("vehicleId", lockedVehicle.id) + lockedContext("Rental for this car", vehicleLine(lockedVehicle)) : rentalVehicleOptions(prefill.vehicleId || ui.vehicleId)}
       ${field("Start date", "startDate", todayKey(), "date", true)}
       ${field("Return date", "endDate", addDays(7), "date", true)}
@@ -2302,6 +2379,8 @@
     }
     if (type === "return") return saveRentalReturn(data);
     if (type === "contract") return saveContract(data);
+    if (type === "cancel-assignment") return saveAssignmentCancellation(data);
+    if (type === "manage-record") return saveRecordManagement({ ...data, operation: form.dataset.operation });
     if (type === "change-vehicle") return saveVehicleChange(data);
     if (type === "vehicle") return saveVehicle(data);
     if (type === "customer") return saveCustomer(data);
@@ -2634,6 +2713,10 @@
   }
 
   async function saveRental(data) {
+    const knownCustomer = customerById(data.customerId) || db.customers.find(customer => (phoneKey(data.driverPhone) && phoneKey(customer.phone) === phoneKey(data.driverPhone)) || (textKey(data.licenseNumber) && textKey(customer.license) === textKey(data.licenseNumber)));
+    if (knownCustomer && db.rentals.some(rental => rental.customerId === knownCustomer.id && ["active", "reserved"].includes(rental.status)) && data.additionalRental !== "on") {
+      throw new Error("This customer already has an assigned vehicle. Open their profile to change or return it. For an intentional additional rental, tick the additional vehicle box.");
+    }
     const vehicle = vehicleById(data.vehicleId);
     if (!vehicle) {
       alert("No available car is selected for this rental.");
@@ -2877,6 +2960,19 @@
 
   function handleAction(button) {
     const action = button.dataset.action;
+    if (action === "directory-filter") {
+      if (button.dataset.type === "customer") ui.customerArchive = button.dataset.filter;
+      else ui.fleetArchive = button.dataset.filter;
+      render(); return;
+    }
+    if (action === "manage-record") {
+      if (auth?.role !== "staff") return;
+      ui.modal = "manage-record"; ui.prefill = { recordType: button.dataset.type, recordId: button.dataset.id }; ui.actionMenu = ""; render(); return;
+    }
+    if (action === "cancel-assignment") {
+      if (auth?.role !== "staff" || !rentalById(button.dataset.id) || rentalById(button.dataset.id).status === "closed") return;
+      ui.modal = "cancel-assignment"; ui.prefill = { rentalId: button.dataset.id }; ui.actionMenu = ""; render(); return;
+    }
     if (action === "customer-emails") {
       if (auth?.role !== "staff") return;
       const rentalId = button.dataset.id;
@@ -3172,6 +3268,7 @@
     const form = event.target.closest("[data-form]");
     if (!form) return;
     event.preventDefault();
+    if (form.dataset.form === "manage-record") form.dataset.operation = event.submitter?.dataset.recordOperation || "";
     if (form.dataset.saving) return;
     form.dataset.saving = "true";
     const submitButtons = [...form.querySelectorAll("button:not([type]), button[type=submit]")];

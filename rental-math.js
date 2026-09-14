@@ -25,6 +25,7 @@
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   }
   function schedule(rental) {
+    if (rental.cancelledAt) return [];
     const start = date(rental.startDate), end = date(rental.returnDate || rental.endDate);
     if (!start || !end || end < start) return [];
     const rate = Number(rental.monthlyRate || 0) || Number(rental.dailyRate || 0) * 30;
@@ -43,7 +44,7 @@
     return rows;
   }
   function summary(rental, payments, asOf = today()) {
-    const installments = schedule(rental), deposit = Number(rental.deposit || 0);
+    const installments = schedule(rental), deposit = rental.cancelledAt ? 0 : Number(rental.deposit || 0);
     const rentCharged = round(installments.reduce((sum, row) => sum + row.amount, 0));
     const received = round(payments.filter(p => String(p.rentalId) === String(rental.id) && (!p.date || p.date <= asOf)).reduce((sum, p) => sum + Number(p.amount || 0), 0));
     const rentDue = round(installments.filter(row => row.dueDate <= asOf).reduce((sum, row) => sum + row.amount, 0));

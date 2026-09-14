@@ -37,7 +37,7 @@ function frontend(data) {
     setTimeout: () => 0, clearTimeout() {}, alert: message => { throw new Error(message); }
   });
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract }; })();'), context);
+  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract, saveAssignmentCancellation, saveRental, saveRecordManagement }; })();'), context);
   return {
     app,
     saveVehicle: context.testApp.saveVehicle,
@@ -45,6 +45,9 @@ function frontend(data) {
     saveVehicleChange: context.testApp.saveVehicleChange,
     saveRentalReturn: context.testApp.saveRentalReturn,
     saveContract: context.testApp.saveContract,
+    saveAssignmentCancellation: context.testApp.saveAssignmentCancellation,
+    saveRental: context.testApp.saveRental,
+    saveRecordManagement: context.testApp.saveRecordManagement,
     savedData: () => JSON.parse(cache.get('rental_management_real_app_v1')),
     click(dataset) {
       // The delegated click handler must also work when a child inside the row is clicked.
@@ -70,6 +73,57 @@ function assignmentData() {
 function contractInput(extra = {}) {
   return { rentalId: 'rental', previousVehicleId: 'old', vehicleId: 'old', name: 'Updated renter', phone: '5551234567', email: 'new@example.test', address: 'New address', license: 'UPDATED-LICENSE', unit: 'UPDATED-CAR', make: 'Toyota', model: 'Corolla', plate: 'NEWPLATE', vin: 'VIN-123', mileage: '150', returnMileage: '150', startDate: '2026-01-01', endDate: '2026-12-31', monthlyRate: '1200', deposit: '250', status: 'active', notes: 'Updated contract', ...extra };
 }
+
+test('closed customers are hidden by default, discoverable and restorable without losing history', () => {
+  const data = assignmentData(); data.rentals[0].status = 'closed';
+  const page = frontend(data);
+  page.click({ action: 'select-customer', id: 'customer' });
+  page.click({ action: 'back-to-list', list: 'customers' });
+  assert.doesNotMatch(page.app.innerHTML, /data-action="select-customer" data-id="customer"/);
+  page.click({ action: 'directory-filter', type: 'customer', filter: 'closed' });
+  assert.match(page.app.innerHTML, /data-action="select-customer" data-id="customer"/);
+  page.saveRecordManagement({ recordType: 'customer', recordId: 'customer', operation: 'restore' });
+  assert.match(page.app.innerHTML, /data-action="select-customer" data-id="customer"/);
+  assert.equal(page.savedData().payments.length, 1);
+  assert.throws(() => page.saveRecordManagement({ recordType: 'customer', recordId: 'customer', operation: 'delete' }), /linked history/);
+});
+
+test('only unused records can be deleted and open assignments cannot be archived', () => {
+  const page = frontend(assignmentData());
+  assert.throws(() => page.saveRecordManagement({ recordType: 'customer', recordId: 'customer', operation: 'archive' }), /open rental/);
+  assert.throws(() => page.saveRecordManagement({ recordType: 'vehicle', recordId: 'old', operation: 'archive' }), /open rental/);
+  page.saveRecordManagement({ recordType: 'vehicle', recordId: 'new', operation: 'delete' });
+  assert.equal(page.savedData().vehicles.length, 1);
+  assert.equal(page.savedData().rentals[0].vehicleId, 'old');
+});
+
+test('multiple assignments are visible and cancelling a mistaken unpaid one preserves the correct contract', () => {
+  const data = assignmentData();
+  data.rentals.push({ ...data.rentals[0], id: 'mistake', vehicleId: 'new' });
+  data.vehicles[1].status = 'rented';
+  const page = frontend(data);
+  page.click({ action: 'select-customer', id: 'customer' });
+  assert.match(page.app.innerHTML, /Assigned vehicles \(2\)/);
+  assert.match(page.app.innerHTML, /data-action="cancel-assignment" data-id="mistake"/);
+  page.saveAssignmentCancellation({ rentalId: 'mistake', reason: 'Assigned wrong car' });
+  const saved = page.savedData();
+  assert.equal(saved.rentals[0].status, 'active');
+  assert.equal(saved.rentals[1].status, 'closed');
+  assert.equal(saved.rentals[1].cancellationReason, 'Assigned wrong car');
+  assert.equal(saved.vehicles[1].status, 'available');
+  assert.equal(saved.vehicles[0].status, 'rented');
+  assert.equal(saved.payments[0].amount, 400);
+  assert.equal(require('../rental-math').summary(saved.rentals[1], saved.payments).total, 0);
+  assert.match(page.app.innerHTML, /Assigned vehicles \(1\)/);
+});
+
+test('paid assignments cannot be cancelled and duplicate rentals require explicit additional-vehicle choice', async () => {
+  const page = frontend(assignmentData());
+  assert.throws(() => page.saveAssignmentCancellation({ rentalId: 'rental', reason: 'Wrong assignment' }), /has payments/);
+  assert.equal(page.savedData().rentals[0].status, 'active');
+  await assert.rejects(page.saveRental({ customerId: 'customer', vehicleId: 'new' }), /already has an assigned vehicle/);
+  assert.equal(page.savedData().rentals.length, 1);
+});
 
 test('one contract save updates linked customer, fleet, rental and balance without replacing history', async () => {
   const data = assignmentData();
