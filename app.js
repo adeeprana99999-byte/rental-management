@@ -1512,6 +1512,7 @@
           <div class="profile-actions">
             ${statusBadge(rental.status)}
             <button class="primary-add" data-action="edit-contract" data-id="${esc(rental.id)}">Edit contract</button>
+            <button class="soft-btn" data-action="customer-emails" data-id="${esc(rental.id)}">Customer emails</button>
             ${rental.status === "active" ? `<button class="soft-btn" data-action="change-vehicle" data-id="${esc(rental.id)}">Change vehicle</button>` : ""}
             ${rental.status !== "closed" ? `<button class="primary-add" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button>` : ""}
             ${contextActionMenu(`rental-${rental.id}`, [
@@ -1814,6 +1815,7 @@
   }
 
   function recordTypeLabel(value) {
+    if (value === 'emails') return 'Customer emails';
     if (value === 'contract') return 'Edit contract';
     if (value === 'change-vehicle') return 'Change vehicle';
     if (value === 'return') return 'Return vehicle';
@@ -1847,6 +1849,7 @@
   }
 
   function renderForm(type) {
+    if (type === "emails") return customerEmailsView();
     if (type === "contract") return contractForm();
     if (type === "change-vehicle") return changeVehicleForm();
     if (type === "return") return returnRentalForm();
@@ -1927,6 +1930,14 @@
     return '<h3>Final settlement</h3><p>Rent through ' + esc(date) + ', including the return day: <b>' + money(value.rentCharged) + '</b></p><p>Contract deposit: ' + money(value.deposit) + ' · Received: ' + money(value.received) + '</p><p><b>Amount due from customer: ' + money(value.due) + '</b></p><p>Credit above contract: ' + money(value.credit) + '</p><p>Maintenance and business expenses are excluded. Deposit refunds are settled separately. The car becomes available unless another active rental or service requires it.</p>';
   }
 
+  function customerEmailsView() {
+    const state = ui.emailState;
+    if (!state) return '<div class="record-form"><p role="status">Loading email previews and history…</p></div>';
+    if (state.error) return `<div class="record-form"><p role="alert">${esc(state.error)}</p></div>`;
+    const rows = [...(state.drafts || []), ...(state.history || [])];
+    return `<div class="record-form"><p><b>${state.enabled ? "Automatic email is enabled" : "Preview only — sending is disabled"}</b></p><p>Sender: ${esc(state.from || "Not configured")}. Rent reminders run from 3 days before the due date. Receipts follow newly recorded payments. Accepted means Gmail accepted the message; inbox delivery is not confirmed.</p><p>Edit the customer's email address in Edit contract. Refresh this view to check the latest status.</p>${rows.length ? rows.map(row => `<section class="return-settlement"><h3>${esc(row.kind)} · ${esc(row.status)}</h3><p>To: ${esc(row.to || "Missing customer email")}</p><b>${esc(row.subject)}</b><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit">${esc(row.text)}</pre>${row.detail ? `<p>${esc(row.detail)}</p>` : ""}</section>`).join("") : '<p>No reminder is due within the next 3 days, and no new receipt is waiting. Historical payments are not automatically emailed.</p>'}</div>`;
+  }
+
   function contractForm() {
     const rental = rentalById(ui.prefill.rentalId);
     if (!rental) return "";
@@ -1939,6 +1950,7 @@
         <h3 class="wide">Customer</h3>
         ${field("Customer name", "name", customer.name, "text", true)}${field("Phone", "phone", customer.phone, "tel", true)}
         ${field("Email", "email", customer.email, "email")}${field("Address", "address", customer.address, "text")}
+        ${selectField("Customer billing emails", "emailNotifications", [{ value: "on", label: "Reminders and payment receipts" }, { value: "off", label: "Do not email this customer" }], customer.emailNotifications || "on")}
         ${field("Driver license", "license", customer.license, "text")}${field("License expiry", "licenseExpiry", rental.licenseExpiry, "date")}
         <h3 class="wide">Vehicle</h3>
         ${selectField("Assigned vehicle", "vehicleId", choices.map(v => ({ value: v.id, label: vehicleLine(v) })), vehicle.id)}
@@ -1992,6 +2004,7 @@
     }
     Object.assign(customer, { name: cleanText(data.name), phone: cleanText(data.phone), email: cleanText(data.email), address: cleanText(data.address), license: cleanText(data.license) });
     syncCustomerDetails(customer);
+    customer.emailNotifications = data.emailNotifications === "off" ? "off" : "on";
     Object.assign(vehicle, { unit: cleanText(data.unit), make: cleanText(data.make), model: cleanText(data.model), plate: cleanText(data.plate), vin: cleanText(data.vin), mileage: Number(data.mileage) });
     Object.assign(rental, { vehicleId: vehicle.id, driverName: customer.name, driverPhone: customer.phone, licenseNumber: customer.license, startDate: data.startDate, endDate: data.endDate, monthlyRate: Number(data.monthlyRate), deposit: Number(data.deposit), status: data.status, pickupLocation: cleanText(data.pickupLocation), licenseExpiry: data.licenseExpiry, insuranceCompany: cleanText(data.insuranceCompany), insurancePolicy: cleanText(data.insurancePolicy), insuranceExpiry: data.insuranceExpiry, notes: cleanText(data.notes) });
     if (Object.hasOwn(rental, "dailyRate")) rental.dailyRate = rental.monthlyRate / 30;
@@ -2770,6 +2783,7 @@
       amount: Number(data.amount || 0),
       method: data.method,
       reference: data.reference.trim(),
+      emailReceiptRequestedAt: new Date().toISOString(),
       notes: data.notes.trim()
     };
     db.payments.unshift(payment);
@@ -2863,6 +2877,16 @@
 
   function handleAction(button) {
     const action = button.dataset.action;
+    if (action === "customer-emails") {
+      if (auth?.role !== "staff") return;
+      const rentalId = button.dataset.id;
+      ui.modal = "emails"; ui.prefill = { rentalId }; ui.emailState = null; render();
+      fetch('/api/email-notifications?rentalId=' + encodeURIComponent(rentalId), { headers: apiHeaders() })
+        .then(async response => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error || 'Email history is unavailable.'); return payload; })
+        .then(payload => { if (ui.modal === "emails" && ui.prefill.rentalId === rentalId) { ui.emailState = payload; render(); } })
+        .catch(error => { if (ui.modal === "emails" && ui.prefill.rentalId === rentalId) { ui.emailState = { error: error.message }; render(); } });
+      return;
+    }
     if (action === "edit-contract") {
       if (auth?.role !== "staff" || !rentalById(button.dataset.id)) return;
       ui.modal = "contract"; ui.prefill = { rentalId: button.dataset.id }; ui.actionMenu = ""; ui.addMenu = false;

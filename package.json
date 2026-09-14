@@ -5,10 +5,14 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check app.js && node --check server.js && node --check service-worker.js && node --check rental-math.js",
+    "check": "node --check app.js && node --check server.js && node --check service-worker.js && node --check rental-math.js && node --check email-notifications.js",
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {
-    "mongodb": "^6.20.0"
+    "mongodb": "^6.20.0",
+    "nodemailer": "10.0.8"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

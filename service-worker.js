@@ -1,4 +1,4 @@
-const CACHE_NAME = "rental-management-shell-v6-monthly-due";
+const CACHE_NAME = "rental-management-shell-v7-billing-email";
 const APP_SHELL = [
   "/",
   "/index.html",

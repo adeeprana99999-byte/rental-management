@@ -11,6 +11,15 @@ const databaseName = process.env.MONGODB_DB || readLocalConfig().databaseName ||
 const collectionNames = ["vehicles", "customers", "rentals", "payments", "expenses", "maintenance", "inspections", "documents", "activity"];
 const sessions = new Map();
 const RentalMath = require("./rental-math");
+const EmailNotifications = require("./email-notifications");
+let emailJobBusy = false;
+async function runEmailJob() {
+  if (emailJobBusy || !EmailNotifications.config().enabled) return;
+  emailJobBusy = true;
+  try { const db = await getDatabase(); if (db) await EmailNotifications.run(db); }
+  catch { console.warn("Email job could not finish. Check database and email configuration."); }
+  finally { emailJobBusy = false; }
+}
 
 const types = {
   ".html": "text/html; charset=utf-8",
@@ -701,6 +710,13 @@ async function customerCheckIn(request, response) {
 
 async function handleApi(request, response, url) {
   try {
+    if (request.method === "GET" && url.pathname === "/api/email-notifications") {
+      requireRole(request, "staff");
+      const db = await getDatabase();
+      if (!db) { sendJson(response, 503, { error: "Connect the database to view email history." }); return true; }
+      sendJson(response, 200, await EmailNotifications.overview(db, url.searchParams.get("rentalId") || ""));
+      return true;
+    }
     if (request.method === "GET" && url.pathname === "/api/status") {
       await getDatabase().catch(() => null);
       sendJson(response, 200, { ok: mongoState.status.connected, status: mongoState.status });
@@ -738,6 +754,7 @@ async function handleApi(request, response, url) {
       requireRole(request, "staff");
       const payload = await readJsonBody(request);
       await writeDatabase(payload.data || payload);
+      void runEmailJob();
       sendJson(response, 200, { ok: true, status: mongoState.status });
       return true;
     }
@@ -763,6 +780,10 @@ async function serve(request, response) {
   const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
   const filePath = path.normalize(path.join(root, pathname));
   const relativePath = path.relative(root, filePath);
+
+  if (!/^(index\.html|app\.js|rental-math\.js|styles\.css|service-worker\.js|manifest\.webmanifest|assets[\\/].+)$/i.test(relativePath)) {
+    send(response, 404, "Not found"); return;
+  }
 
   if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
     send(response, 403, "Forbidden");
@@ -796,3 +817,7 @@ function listen(port, allowFallback) {
 }
 
 listen(preferredPort, preferredPort !== fallbackPort);
+if (EmailNotifications.config().enabled) {
+  setInterval(() => { void runEmailJob(); }, 5 * 60 * 1000).unref();
+  void runEmailJob();
+}
