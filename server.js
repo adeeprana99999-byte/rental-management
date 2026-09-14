@@ -10,6 +10,7 @@ const configPath = path.join(root, "server.local.json");
 const databaseName = process.env.MONGODB_DB || readLocalConfig().databaseName || "rental_management";
 const collectionNames = ["vehicles", "customers", "rentals", "payments", "expenses", "maintenance", "inspections", "documents", "activity"];
 const sessions = new Map();
+const RentalMath = require("./rental-math");
 
 const types = {
   ".html": "text/html; charset=utf-8",
@@ -292,8 +293,9 @@ function sanitizeCustomerVehicle(vehicle) {
   return clean;
 }
 
-function sanitizeCustomerRental(rental) {
+function sanitizeCustomerRental(rental, payments = []) {
   const clean = cleanMongoDocument(rental);
+  clean.settlement = RentalMath.summary(clean, payments);
   delete clean.dailyRate;
   delete clean.monthlyRate;
   delete clean.deposit;
@@ -310,6 +312,7 @@ async function customerDatabaseData(db, session) {
   }
   const rentals = await db.collection("rentals").find({ customerId: customer.id }).sort({ startDate: -1, sortOrder: 1 }).toArray();
   const rentalIds = rentals.map((rental) => rental.id);
+  const payments = rentalIds.length ? await db.collection("payments").find({ rentalId: { $in: rentalIds } }).toArray() : [];
   const vehicleIds = Array.from(new Set(rentals.map((rental) => rental.vehicleId).filter(Boolean)));
   const vehicles = vehicleIds.length
     ? await db.collection("vehicles").find({ _id: { $in: vehicleIds } }).sort({ sortOrder: 1, _id: 1 }).toArray()
@@ -338,7 +341,7 @@ async function customerDatabaseData(db, session) {
     settings: cleanMongoDocument(settingsDoc) || {},
     vehicles: vehicles.map(sanitizeCustomerVehicle),
     customers: [cleanMongoDocument(customer)],
-    rentals: rentals.map(sanitizeCustomerRental),
+    rentals: rentals.map(rental => sanitizeCustomerRental(rental, payments)),
     payments: [],
     expenses: [],
     maintenance: [],

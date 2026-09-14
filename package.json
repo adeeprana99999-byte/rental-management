@@ -5,7 +5,8 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check app.js && node --check server.js && node --check service-worker.js"
+    "check": "node --check app.js && node --check server.js && node --check service-worker.js && node --check rental-math.js",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "mongodb": "^6.20.0"

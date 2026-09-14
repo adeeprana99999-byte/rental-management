@@ -13,6 +13,15 @@ vm.runInContext(fs.readFileSync(path.join(root, 'server.js'), 'utf8').replace(
 ), server);
 const clean = server.cleanMongoDocument;
 
+test('customer rental summary includes only the scoped contract and its payments', () => {
+  const rental = { id: 'rental-a', startDate: '2026-09-01', returnDate: '2026-09-10', monthlyRate: 3000, deposit: 0 };
+  const visible = server.sanitizeCustomerRental(rental, [{ rentalId: 'rental-a', amount: 400 }, { rentalId: 'other', amount: 99999 }]);
+  assert.equal(visible.settlement.rentCharged, 1000);
+  assert.equal(visible.settlement.due, 600);
+  assert.equal(visible.monthlyRate, undefined);
+  assert.equal(visible.payments, undefined);
+});
+
 function frontend(data) {
   const app = { innerHTML: '' };
   const events = {};
@@ -23,6 +32,7 @@ function frontend(data) {
   const context = vm.createContext({
     document: { getElementById: () => app, addEventListener: (type, handler) => { events[type] = handler; } },
     localStorage: { getItem: key => cache.get(key), setItem: (key, value) => cache.set(key, value) },
+    RentalMath: require("../rental-math"),
     window: { location: { search: '?view=fleet' } }, URLSearchParams, Intl, console,
     setTimeout: () => 0, clearTimeout() {}, alert: message => { throw new Error(message); }
   });

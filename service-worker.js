@@ -1,9 +1,10 @@
-const CACHE_NAME = "rental-management-shell-v1";
+const CACHE_NAME = "rental-management-shell-v2-rent-returns";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/styles.css",
   "/app.js",
+  "/rental-math.js",
   "/manifest.webmanifest",
   "/assets/login-fleet-bg.png",
   "/assets/app-icon.svg",

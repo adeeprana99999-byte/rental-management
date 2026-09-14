@@ -71,6 +71,7 @@
     vehicleTab: "",
     customerTab: "info",
     documentFilter: "all",
+    financeMonth: todayKey().slice(0, 7),
     financeFilter: "all"
   };
 
@@ -335,18 +336,30 @@
         resolve({ fileName: "", fileType: "", fileData: "", fileSize: 0 });
         return;
       }
-      if (file.size > 8 * 1024 * 1024) {
-        reject(new Error("Choose a file under 8 MB."));
+      if (!file.size) { reject(new Error('This file is empty. Download the original and select it again.')); return; }
+      const photo = /^image\//.test(file.type) || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name);
+      if (file.size > (photo ? 30 : 8) * 1024 * 1024) {
+        reject(new Error(photo ? "Choose a photo under 30 MB." : "Choose a file under 8 MB."));
         return;
       }
       const reader = new FileReader();
-      reader.onload = () => resolve({
-        fileName: file.name,
-        fileType: file.type || "application/octet-stream",
-        fileData: String(reader.result || ""),
-        fileSize: file.size || 0
-      });
+      reader.onload = async () => {
+        try {
+          const result = { fileName: file.name, fileType: file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'application/octet-stream'), fileData: String(reader.result || ''), fileSize: file.size || 0 };
+          if (photo && (file.size > 8 * 1024 * 1024 || /heic|heif/i.test(file.type + file.name))) {
+            const image = await new Promise((done, fail) => { const img = new Image(); img.onload = () => done(img); img.onerror = () => fail(new Error('Choose JPEG/PNG or take a new photo; this photo format cannot be resized here.')); img.src = result.fileData; });
+            const scale = Math.min(1, 2400 / Math.max(image.naturalWidth, image.naturalHeight));
+            const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(image.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+            const context = canvas.getContext('2d'); context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(image, 0, 0, canvas.width, canvas.height);
+            result.fileData = canvas.toDataURL('image/jpeg', .85); result.fileSize = Math.ceil((result.fileData.length - result.fileData.indexOf(',') - 1) * .75);
+            if (result.fileSize > 8 * 1024 * 1024) throw new Error('Choose a smaller photo under 8 MB.');
+            result.fileName = file.name.replace(/\.[^.]+$/, '') + '.jpg'; result.fileType = 'image/jpeg';
+          }
+          resolve(result);
+        } catch (error) { reject(error); }
+      };
       reader.onerror = () => reject(new Error("The file could not be read."));
+      reader.onabort = () => reject(new Error("File loading was cancelled. Select the file again."));
       reader.readAsDataURL(file);
     });
   }
@@ -372,7 +385,7 @@
   }
 
   function money(value) {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: db.settings.currency || "USD", maximumFractionDigits: 0 }).format(Number(value) || 0);
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: db.settings.currency || "USD", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value) || 0);
   }
 
   function number(value) {
@@ -453,7 +466,7 @@
   }
 
   function rentalTotal(rental) {
-    return ((daysBetween(rental.startDate, rental.endDate) / 30) * rentalMonthlyRate(rental)) + Number(rental.deposit || 0);
+    return RentalMath.summary(rental, []).total;
   }
 
   function rentalMonthlyRate(rental) {
@@ -467,7 +480,7 @@
   }
 
   function rentalBalance(rental) {
-    return Math.max(0, rentalTotal(rental) - rentalPaid(rental.id));
+    return RentalMath.summary(rental, db.payments).due;
   }
 
   function vehicleRevenue(vehicleId) {
@@ -894,6 +907,7 @@
             </div>
             ${statusBadge(rental.status)}
           </section>
+          ${rental.settlement ? `<section class="customer-info-card"><h3>My rental balance</h3><p>Rent: ${money(rental.settlement.rentCharged)} · Contract deposit: ${money(rental.settlement.deposit)} · Received: ${money(rental.settlement.received)}</p><b>Amount due: ${money(rental.settlement.due)}</b><p>Credit above contract: ${money(rental.settlement.credit)}. Maintenance and business expenses are excluded. Deposit refunds are settled separately.</p>${rental.returnDate ? `<p>Returned ${shortDate(rental.returnDate)}</p>` : ""}</section>` : ""}
           <section class="customer-grid">
             <article class="customer-info-card">
               <small>Rental</small>
@@ -1440,7 +1454,7 @@
         <button class="mini-btn" data-action="select-vehicle" data-id="${esc(rental.vehicleId)}">Car</button>
         <button class="mini-btn" data-action="select-customer" data-id="${esc(rental.customerId)}">Customer</button>
         ${rental.status !== "closed" ? `<button class="mini-btn primary" data-action="open-add" data-type="payment" data-rental-id="${esc(rental.id)}" data-vehicle-id="${esc(rental.vehicleId)}" data-customer-id="${esc(rental.customerId)}">Pay</button>` : ""}
-        ${rental.status !== "closed" ? `<button class="mini-btn" data-action="close-rental" data-id="${esc(rental.id)}">Close</button>` : ""}
+        ${rental.status !== "closed" ? `<button class="mini-btn" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button>` : ""}
       </footer>
     </article>`;
   }
@@ -1484,25 +1498,28 @@
           </div>
           <div class="profile-actions">
             ${statusBadge(rental.status)}
+            ${rental.status !== "closed" ? `<button class="primary-add" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button>` : ""}
             ${contextActionMenu(`rental-${rental.id}`, [
-              rental.status !== "closed" ? { label: "Record payment", type: "payment", rentalId: rental.id, vehicleId: rental.vehicleId, customerId: rental.customerId } : null,
+              balance > 0 ? { label: "Record payment", type: "payment", rentalId: rental.id, vehicleId: rental.vehicleId, customerId: rental.customerId } : null,
               { label: "Add inspection", type: "inspection", rentalId: rental.id, vehicleId: rental.vehicleId },
               { label: "Add file", type: "document", ownerType: "rental", ownerId: rental.id },
               { label: "Car profile", action: "select-vehicle", id: rental.vehicleId },
               { label: "Customer", action: "select-customer", id: rental.customerId },
-              rental.status !== "closed" ? { label: "Close rental", action: "close-rental", id: rental.id } : { label: "Open car", action: "select-vehicle", id: rental.vehicleId }
+              rental.status !== "closed" ? { label: "Return vehicle", action: "close-rental", id: rental.id } : { label: "Open car", action: "select-vehicle", id: rental.vehicleId }
             ])}
           </div>
         </header>
         <section class="profile-grid rental-summary-grid">
-          <article class="profile-card"><small>Contract</small><h3>${money(rentalTotal(rental))}</h3><p>${number(daysBetween(rental.startDate, rental.endDate))} days / ${money(rentalMonthlyRate(rental))} monthly plus ${money(rental.deposit)} deposit</p></article>
+          <article class="profile-card"><small>Contract</small><h3>${money(rentalTotal(rental))}</h3><p>${number(daysBetween(rental.startDate, rental.returnDate || rental.endDate))} days / ${money(rentalMonthlyRate(rental))} monthly plus ${money(rental.deposit)} deposit</p></article>
           <article class="profile-card"><small>Received</small><h3>${money(rentalPaid(rental.id))}</h3><p>${number(payments.length)} payments recorded</p></article>
-          <article class="profile-card"><small>Balance</small><h3 class="${balance ? "text-danger" : "text-success"}">${money(balance)}</h3><p>${balance ? "Collect before closeout" : "Paid up"}</p></article>
+          <article class="profile-card"><small>Balance</small><h3 class="${balance ? "text-danger" : "text-success"}">${money(balance)}</h3><p>${balance ? "Unpaid contract balance remains collectible after return" : "Paid up"}. Maintenance is excluded.</p></article>
           <article class="profile-card"><small>Checks</small><h3>${number(inspections.length)}</h3><p>${number(expenses.length)} linked expenses</p></article>
         </section>
         <section class="detail-grid">
           ${detail("Pickup", rental.pickupLocation)}
-          ${detail("Status", rental.status)}
+          ${detail("Status", rental.returnDate ? "Returned" : rental.status)}
+          ${detail("Actual return date", rental.returnDate || "Not returned")}
+          ${detail("Credit above contract", money(RentalMath.summary(rental, db.payments).credit))}
           ${detail("Vehicle", vehicle ? vehicle.unit + " - " + vehicle.make + " " + vehicle.model : "Not assigned")}
           ${detail("Customer", customer?.name || "Not assigned")}
           ${detail("Phone", customer?.phone || "Not saved")}
@@ -1522,18 +1539,19 @@
   }
 
   function renderFinance() {
-    const entries = financeEntries().filter((entry) => ui.financeFilter === "all" || entry.type === ui.financeFilter);
-    const all = financeEntries();
+    const all = financeEntries().filter(entry => !ui.financeMonth || String(entry.date || "").slice(0, 7) === ui.financeMonth);
+    const entries = all.filter((entry) => ui.financeFilter === "all" || entry.type === ui.financeFilter);
     const revenue = all.filter((entry) => entry.amount > 0).reduce((sum, entry) => sum + entry.amount, 0);
     const expense = all.filter((entry) => entry.amount < 0).reduce((sum, entry) => sum + Math.abs(entry.amount), 0);
     return `
       <section class="page-title">
-        <div><small>Finance</small><h2>Transactions, income, expenses</h2></div>
+        <div><small>Owner / staff only</small><h2>Monthly income and costs</h2><label>Month<input type="month" data-finance-month value="${esc(ui.financeMonth)}"></label><p>Maintenance and expenses reduce business net only. They do not reduce rent received or alter the customer balance.</p></div>
         <div class="title-actions"><button class="primary-add" data-action="open-add" data-type="payment">+ Payment</button><button class="soft-btn" data-action="open-add" data-type="expense">Expense</button></div>
       </section>
       <section class="metric-grid tight">
         ${metric("Income", money(revenue), "customer payments", "green")}
-        ${metric("Expenses", money(expense), "maintenance and operations", "amber")}
+        ${metric("Maintenance", money(all.filter(e => e.type === "maintenance").reduce((sum, e) => sum + Math.abs(e.amount), 0)), "internal cost", "amber")}
+        ${metric("Expenses", money(expense), "all maintenance and operations", "amber")}
         ${metric("Net", money(revenue - expense), "cash result", revenue - expense >= 0 ? "green" : "danger")}
         ${metric("Open balances", money(db.rentals.reduce((sum, rental) => sum + rentalBalance(rental), 0)), "still collectible", "blue")}
       </section>
@@ -1780,6 +1798,7 @@
   }
 
   function recordTypeLabel(value) {
+    if (value === 'return') return 'Return vehicle';
     return value === "customer" ? "Customer" : tabLabel(value);
   }
 
@@ -1810,6 +1829,7 @@
   }
 
   function renderForm(type) {
+    if (type === "return") return returnRentalForm();
     if (type === "vehicle") return vehicleForm();
     if (type === "customer") return customerForm();
     if (type === "rental") return rentalForm();
@@ -1831,10 +1851,8 @@
   }
 
   function fileField(label, name, accept, required = true) {
-    return `<label class="file-capture wide">${esc(label)}
-      <input name="${esc(name)}" type="file" accept="${esc(accept || "image/*,.pdf,.doc,.docx")}" capture="environment" ${required ? "required" : ""}>
-      <span><b>${required ? "Upload or take photo" : "Optional photo/file"}</b><small>Camera photos, images, PDFs, and document files up to 8 MB.</small></span>
-    </label>`;
+    const types = accept || 'image/*,.pdf,.doc,.docx';
+    return '<div class="file-capture wide"><b>' + esc(label) + '</b><div class="file-choices"><label class="file-choice">Choose photo / file<input name="' + esc(name) + '" type="file" accept="' + esc(types) + '" data-file-name="' + esc(name) + '" data-file-required="' + required + '"></label>' + (types.includes('image/') ? '<label class="file-choice">Take photo<input type="file" accept="image/*" capture="environment" data-file-name="' + esc(name) + '" data-file-required="' + required + '"></label>' : '') + '</div><small class="file-status" role="status">' + (required ? 'Required. ' : 'Optional. ') + 'Select a file, then save. Files up to 8 MB.</small></div>';
   }
 
   function textarea(label, name, value) {
@@ -1881,6 +1899,33 @@
       const vehicle = vehicleById(item.vehicleId);
       return { value: item.id, label: `${item.type} - ${vehicle?.unit || "Vehicle"} - ${item.status}` };
     })), selected);
+  }
+
+  function returnPreview(rental, date) {
+    const proposed = Object.assign({}, rental, { returnDate: date, billingPolicy: "calendar-monthly" });
+    const value = RentalMath.summary(proposed, db.payments);
+    return '<h3>Final settlement</h3><p>Rent through ' + esc(date) + ', including the return day: <b>' + money(value.rentCharged) + '</b></p><p>Contract deposit: ' + money(value.deposit) + ' · Received: ' + money(value.received) + '</p><p><b>Amount due from customer: ' + money(value.due) + '</b></p><p>Credit above contract: ' + money(value.credit) + '</p><p>Maintenance and business expenses are excluded. Deposit refunds are settled separately. The car becomes available unless another active rental or service requires it.</p>';
+  }
+
+  function returnRentalForm() {
+    const rental = rentalById(ui.prefill.rentalId);
+    if (!rental) return '';
+    const vehicle = vehicleById(rental.vehicleId);
+    return '<form data-form="return" class="record-form">' + hiddenField('rentalId', rental.id) + '<div class="form-grid"><label>Actual return date<input type="date" name="returnDate" min="' + esc(rental.startDate) + '" max="' + todayKey() + '" value="' + todayKey() + '" required></label>' + field('Return mileage', 'returnMileage', vehicle?.mileage || '', 'number', true) + textarea('Return notes', 'returnNotes', '') + '</div><section class="return-settlement" aria-live="polite">' + returnPreview(rental, todayKey()) + '</section><footer><button class="primary-add">Confirm vehicle return</button></footer></form>';
+  }
+
+  function saveRentalReturn(data) {
+    const rental = rentalById(data.rentalId);
+    if (auth?.role !== 'staff' || !rental || rental.status === 'closed') return;
+    if (!RentalMath.date(data.returnDate) || data.returnDate < rental.startDate || data.returnDate > todayKey()) { alert('Choose a return date between the rental start date and today.'); return; }
+    const vehicle = vehicleById(rental.vehicleId), mileage = Number(data.returnMileage);
+    if (!Number.isFinite(mileage) || mileage < Number(vehicle?.mileage || 0)) { alert('Return mileage cannot be less than the current recorded mileage.'); return; }
+    rental.returnDate = data.returnDate; rental.returnMileage = mileage; rental.returnNotes = String(data.returnNotes || '').trim(); rental.billingPolicy = 'calendar-monthly'; rental.status = 'closed';
+    if (vehicle) vehicle.mileage = mileage;
+    syncVehicle(rental.vehicleId);
+    ui.view = 'rentals'; ui.rentalId = rental.id; ui.rentalMode = 'profile';
+    addActivity('rental', rentalCode(rental) + ' returned on ' + rental.returnDate + '.', 'rental', rental.id, { rentalId: rental.id, vehicleId: rental.vehicleId, customerId: rental.customerId });
+    commit('Vehicle returned. Final amount due: ' + money(rentalBalance(rental)) + '.');
   }
 
   function vehicleForm() {
@@ -2084,6 +2129,7 @@
 
   async function saveForm(form) {
     const data = formValues(form);
+    for (const box of form.querySelectorAll(".file-capture")) { const input = box.querySelector("[data-file-name]"); const selected = box.selectedFile || input?.files?.[0]; if (selected) data[input.dataset.fileName] = selected; else if (input?.dataset.fileRequired === "true") { alert("Choose the required file before saving."); return; } }
     const type = form.dataset.form;
     if (type === "login") return login(data);
     if (type === "password") return changePassword(data);
@@ -2093,6 +2139,7 @@
       commit("Settings updated.");
       return;
     }
+    if (type === "return") return saveRentalReturn(data);
     if (type === "vehicle") return saveVehicle(data);
     if (type === "customer") return saveCustomer(data);
     if (type === "rental") return saveRental(data);
@@ -2471,6 +2518,7 @@
       monthlyRate: Number(data.monthlyRate || 0),
       deposit: Number(data.deposit || 0),
       status: data.status,
+      billingPolicy: "calendar-monthly",
       driverName: String(data.driverName || customer.name).trim(),
       driverPhone: String(data.driverPhone || customer.phone).trim(),
       licenseNumber: String(data.licenseNumber || customer.license).trim(),
@@ -2861,12 +2909,8 @@
     }
     if (action === "close-rental") {
       const rental = rentalById(button.dataset.id);
-      if (rental && confirm("Close this rental and mark the car available if no other active rental exists?")) {
-        rental.status = "closed";
-        syncVehicle(rental.vehicleId);
-        addActivity("rental", `${rentalCode(rental)} closed.`, "rental", rental.id, { rentalId: rental.id, vehicleId: rental.vehicleId, customerId: rental.customerId });
-        commit("Rental closed.");
-      }
+      if (auth?.role !== "staff" || !rental || rental.status === "closed") return;
+      ui.modal = "return"; ui.prefill = { rentalId: rental.id }; ui.actionMenu = ""; render();
       return;
     }
     if (action === "complete-maintenance") {
@@ -2941,14 +2985,20 @@
     const form = event.target.closest("[data-form]");
     if (!form) return;
     event.preventDefault();
+    if (form.dataset.saving) return;
+    form.dataset.saving = "true";
+    const submitButtons = [...form.querySelectorAll("button:not([type]), button[type=submit]")];
+    submitButtons.forEach(button => { button.disabled = true; });
     try {
       await saveForm(form);
     } catch (error) {
       alert(error.message || "This record could not be saved.");
-    }
+    } finally { delete form.dataset.saving; submitButtons.forEach(button => { button.disabled = false; }); }
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target.matches("[data-file-name]")) { const box = event.target.closest(".file-capture"); const file = event.target.files[0]; if (file) { box.selectedFile = file; box.querySelector(".file-status").textContent = "Selected: " + file.name + ". Save to attach."; } return; }
+    if (event.target.matches("[data-finance-month]")) { ui.financeMonth = event.target.value; render(); return; }
     if (event.target.matches('select[name="ownerType"]')) {
       const picker = event.target.closest("form")?.querySelector(".owner-picker");
       if (picker) picker.dataset.ownerTypeGroup = event.target.value;
@@ -2961,6 +3011,7 @@
   });
 
   document.addEventListener("input", (event) => {
+    if (event.target.matches("[name=returnDate]")) { const form = event.target.closest("[data-form=return]"); const rental = form && rentalById(form.elements.rentalId.value); if (rental) form.querySelector(".return-settlement").innerHTML = RentalMath.date(event.target.value) && event.target.value >= rental.startDate && event.target.value <= todayKey() ? returnPreview(rental, event.target.value) : "Choose a valid return date."; return; }
     if (!event.target.matches("[data-search]")) return;
     ui.query = event.target.value;
     const cursor = event.target.selectionStart;

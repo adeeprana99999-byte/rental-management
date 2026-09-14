@@ -3037,3 +3037,27 @@ textarea:focus {
     font-size: 12px;
   }
 }
+
+/* iPhone viewport, input and file-picker fixes. */
+@media (max-width: 900px) {
+  .app-frame { grid-template-columns: minmax(0, 1fr); }
+  .side-rail, .main { min-width: 0; max-width: 100%; }
+}
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body, .app-shell, .login-page, .customer-shell { min-height: 100dvh; }
+.file-choices { display: flex; gap: 8px; flex-wrap: wrap; }
+.file-choice { position: relative; flex: 1 1 140px; min-height: 44px; display: grid; place-items: center; padding: 10px; border: 1px solid #b8cbd9; border-radius: 10px; overflow: hidden; }
+.file-capture .file-choice input { display: block; position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.file-choice:focus-within { outline: 3px solid #2387d4; }
+.file-status, .return-settlement { overflow-wrap: anywhere; line-height: 1.5; }
+.return-settlement { margin: 16px 0; padding: 14px; border: 1px solid #cbd8e2; border-radius: 12px; }
+.modal { max-height: calc(100dvh - 40px); overscroll-behavior: contain; }
+@media (max-width: 860px) {
+  input, select, textarea { min-width: 0; max-width: 100%; font-size: 16px !important; }
+  button, .mini-btn, .back-btn, .soft-btn, .ghost-btn, .file-choice { min-height: 44px; }
+  .modal { max-height: 100dvh; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  .modal > header { position: sticky; top: 0; background: #fff; z-index: 2; }
+  .record-form, .customer-content { padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
+  .profile-actions, .topbar-actions { flex-wrap: wrap; }
+  .profile-actions > *, .form-grid > *, .customer-info-card { min-width: 0; overflow-wrap: anywhere; }
+}
