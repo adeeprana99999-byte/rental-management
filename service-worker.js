@@ -1,4 +1,4 @@
-const CACHE_NAME = "rental-management-shell-v22-finance-filters";
+const CACHE_NAME = "rental-management-shell-v23-finance-recent";
 const APP_SHELL = [
   "/",
   "/index.html",

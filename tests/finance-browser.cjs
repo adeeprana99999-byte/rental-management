@@ -39,6 +39,16 @@ data.expenses[2].rentalId='r';
    await page.locator('[data-finance-month]').fill('2026-09');await page.locator('[data-finance-month]').press('Tab');
    await page.locator('[data-action=open-add][data-type=payment]').click();await page.locator('[data-form=payment]').waitFor();await page.locator('[data-action=close-modal]').first().click();
    await page.locator('[data-action=open-add][data-type=expense]').click();await page.locator('[data-form=expense]').waitFor();
+   const originalCount=data.payments.length;
+   for(let i=0;i<6;i++) data.payments.push({id:'recent-'+i,rentalId:'r',customerId:'c',vehicleId:'v',date:'2026-09-14',amount:10,method:'Cash'});
+   await page.goto('http://127.0.0.1:4341/?view=finance');await page.locator('.finance-ledger tbody tr').first().waitFor();
+   assert.equal(await page.locator('.finance-ledger tbody tr').count(),5);assert.equal(await page.locator('.finance-result-amount').innerText(),'$600');
+   await page.locator('[data-action=finance-more]').click();assert.equal(await page.locator('.finance-ledger tbody tr').count(),10);
+   await page.locator('[data-action=finance-more]').click();assert.equal(await page.locator('.finance-ledger tbody tr').count(),11);assert.equal(await page.locator('[data-action=finance-more]').count(),0);
+   await page.locator('[data-action=finance-fewer]').click();assert.equal(await page.locator('.finance-ledger tbody tr').count(),5);
+   await page.locator('[data-action=finance-more]').click();await page.locator('[data-finance-vehicle]').selectOption('v');assert.equal(await page.locator('.finance-ledger tbody tr').count(),5);
+   assert.equal(await page.locator('.finance-result-amount').innerText(),'$600');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+   data.payments.splice(originalCount);
    assert.deepEqual(errors,[]);console.log(`${engine} ${width}: finance totals, filters, month changes, forms and overflow passed`);
   } finally { await browser.close(); }
  }

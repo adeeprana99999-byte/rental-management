@@ -74,6 +74,7 @@
     financeMonth: todayKey().slice(0, 7),
     financeVehicle: "",
     financeCustomer: "",
+    financeLimit: 5,
     financeFilter: "all"
   };
 
@@ -1587,6 +1588,7 @@
   function renderFinance() {
     const all = financeEntries().filter(entry => (!ui.financeMonth || String(entry.date || "").slice(0, 7) === ui.financeMonth) && (!ui.financeVehicle || entry.vehicleId === ui.financeVehicle) && (!ui.financeCustomer || entry.customerId === ui.financeCustomer));
     const entries = all.filter(entry => ui.financeFilter === "all" || entry.type === ui.financeFilter);
+    const visibleEntries = entries.slice(0, ui.financeLimit || 5);
     const totals = financeTotals(all);
     const scale = Math.max(totals.income, totals.costs, 1);
     const label = ui.financeMonth ? new Date(ui.financeMonth + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 'All recorded months';
@@ -1618,7 +1620,7 @@
         <div><span>Costs <b>${money(totals.costs)}</b></span><div class="finance-bar-track costs" aria-hidden="true"><i style="width:${totals.costs / scale * 100}%"></i></div></div>
         <p>Operating expenses: ${money(RentalMath.round(totals.costs - totals.maintenance))} · Maintenance payments: ${money(totals.maintenance)}</p>
       </div></section>
-      <section class="finance-transactions panel"><header><div><h3>Transactions</h3><p>${entries.length} ${entries.length === 1 ? 'record' : 'records'} · ${esc(label)}</p></div><nav class="tabs filter-tabs" aria-label="Transaction type">${['all','income','expense','maintenance'].map(filter => `<button class="${ui.financeFilter === filter ? 'active' : ''}" data-action="finance-filter" data-filter="${filter}">${tabLabel(filter)} <span>${filter === 'all' ? all.length : all.filter(row => row.type === filter).length}</span></button>`).join('')}</nav></header>${financeTable(entries)}</section>
+      <section class="finance-transactions panel"><header><div><h3>Recent transactions</h3><p aria-live="polite">Showing ${visibleEntries.length} of ${entries.length} · newest first · ${esc(label)}</p></div><nav class="tabs filter-tabs" aria-label="Transaction type">${['all','income','expense','maintenance'].map(filter => `<button class="${ui.financeFilter === filter ? 'active' : ''}" data-action="finance-filter" data-filter="${filter}">${tabLabel(filter)} <span>${filter === 'all' ? all.length : all.filter(row => row.type === filter).length}</span></button>`).join('')}</nav></header>${financeTable(visibleEntries)}${entries.length > 5 ? `<footer class="finance-pagination"><p>Totals above include all matching transactions.</p><div class="row-actions">${visibleEntries.length < entries.length ? `<button class="soft-btn" data-action="finance-more">Show ${Math.min(5, entries.length - visibleEntries.length)} more</button>` : ""}${visibleEntries.length > 5 ? `<button class="soft-btn" data-action="finance-fewer">Show fewer</button>` : ""}</div></footer>` : ""}</section>
     </section>`;
   }
 
@@ -3262,9 +3264,12 @@
       render();
       return;
     }
-    if (action === "clear-finance-entities") { ui.financeVehicle = ""; ui.financeCustomer = ""; render(); return; }
+    if (action === "finance-more") { ui.financeLimit = (ui.financeLimit || 5) + 5; render(); return; }
+    if (action === "finance-fewer") { ui.financeLimit = 5; render(); return; }
+    if (action === "clear-finance-entities") { ui.financeVehicle = ""; ui.financeCustomer = ""; ui.financeLimit = 5; render(); return; }
     if (action === "finance-filter") {
       ui.financeFilter = button.dataset.filter;
+      ui.financeLimit = 5;
       ui.actionMenu = "";
       render();
       return;
@@ -3426,9 +3431,9 @@
       return;
     }
     if (event.target.matches("[data-file-name]")) { const box = event.target.closest(".file-capture"); const file = event.target.files[0]; if (file) { box.selectedFile = file; box.querySelector(".file-status").textContent = "Selected: " + file.name + ". Save to attach."; } return; }
-    if (event.target.matches("[data-finance-vehicle]")) { ui.financeVehicle = event.target.value; render(); return; }
-    if (event.target.matches("[data-finance-customer]")) { ui.financeCustomer = event.target.value; render(); return; }
-    if (event.target.matches("[data-finance-month]")) { ui.financeMonth = event.target.value; render(); return; }
+    if (event.target.matches("[data-finance-vehicle]")) { ui.financeVehicle = event.target.value; ui.financeLimit = 5; render(); return; }
+    if (event.target.matches("[data-finance-customer]")) { ui.financeCustomer = event.target.value; ui.financeLimit = 5; render(); return; }
+    if (event.target.matches("[data-finance-month]")) { ui.financeMonth = event.target.value; ui.financeLimit = 5; render(); return; }
     if (event.target.matches('select[name="ownerType"]')) {
       const picker = event.target.closest("form")?.querySelector(".owner-picker");
       if (picker) picker.dataset.ownerTypeGroup = event.target.value;
