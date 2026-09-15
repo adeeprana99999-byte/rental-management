@@ -51,13 +51,18 @@
     const total = round(rentCharged + deposit);
     const billed = round(rentDue + (rental.startDate <= asOf ? deposit : 0));
     let allocated = Math.max(0, received - deposit), nextDueDate = null, nextAmount = 0;
+    const allocations = [];
+    const allocation = (row, paid, kind) => ({ ...row, kind, paid: round(paid), remaining: round(Math.max(0, row.amount - paid)), status: paid >= row.amount ? 'Paid' : row.dueDate > asOf ? 'Upcoming' : paid > 0 ? 'Partly paid' : row.dueDate < asOf ? 'Overdue' : 'Due today' });
+    if (deposit > 0) allocations.push(allocation({ dueDate: rental.startDate, amount: deposit }, Math.min(deposit, Math.max(0, received)), 'Deposit'));
     for (const row of installments) {
+      const paid = Math.min(row.amount, allocated);
+      allocations.push(allocation(row, paid, 'Rent'));
       const unpaid = round(Math.max(0, row.amount - allocated));
       allocated = Math.max(0, allocated - row.amount);
       const depositUnpaid = row.dueDate === rental.startDate && row.dueDate > asOf ? Math.max(0, deposit - received) : 0;
-      if (row.dueDate > asOf && unpaid + depositUnpaid > 0) { nextDueDate = row.dueDate; nextAmount = round(unpaid + depositUnpaid); break; }
+      if (!nextDueDate && row.dueDate > asOf && unpaid + depositUnpaid > 0) { nextDueDate = row.dueDate; nextAmount = round(unpaid + depositUnpaid); }
     }
-    return { rentCharged, deposit, total, received, due: round(Math.max(0, billed - received)), credit: round(Math.max(0, received - total)), rentDue, futureRent: round(rentCharged - rentDue), remainingBalance: round(Math.max(0, total - received)), nextDueDate, nextAmount };
+    return { allocations, rentCharged, deposit, total, received, due: round(Math.max(0, billed - received)), credit: round(Math.max(0, received - total)), rentDue, futureRent: round(rentCharged - rentDue), remainingBalance: round(Math.max(0, total - received)), nextDueDate, nextAmount };
   }
   const api = { round, date, days, rent, schedule, summary };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -922,7 +922,7 @@
             </div>
             ${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}
           </section>
-          ${rental.settlement ? `<section class="customer-info-card"><h3>My rental balance</h3><p>Rent: ${money(rental.settlement.rentCharged)} · Contract deposit: ${money(rental.settlement.deposit)} · Received: ${money(rental.settlement.received)}</p><b>Due today: ${money(rental.settlement.due)}</b><p>Future rent (not yet due): ${money(rental.settlement.futureRent || 0)}. ${rental.settlement.nextDueDate ? `Next payment: ${shortDate(rental.settlement.nextDueDate)} · ${money(rental.settlement.nextAmount)}` : "No further scheduled rent payments."}</p><p>Credit above contract: ${money(rental.settlement.credit)}. Maintenance and business expenses are excluded. Deposit refunds are settled separately.</p>${rental.returnDate ? `<p>Returned ${shortDate(rental.returnDate)}</p>` : ""}</section>` : ""}
+          ${rental.settlement ? `<section class="customer-info-card"><h3>My rental balance</h3><p>Rent: ${money(rental.settlement.rentCharged)} · Contract deposit: ${money(rental.settlement.deposit)} · Received: ${money(rental.settlement.received)}</p><b>Due today: ${money(rental.settlement.due)}</b><p>Future rent (not yet due): ${money(rental.settlement.futureRent || 0)}. ${rental.settlement.nextDueDate ? `Next payment: ${shortDate(rental.settlement.nextDueDate)} · ${money(rental.settlement.nextAmount)}` : "No further scheduled rent payments."}</p><p>Credit above contract: ${money(rental.settlement.credit)}. Maintenance and business expenses are excluded. Deposit refunds are settled separately.</p>${rental.returnDate ? `<p>Returned ${shortDate(rental.returnDate)}</p>` : ""}</section>${installmentBreakdown(rental.settlement)}` : ""}
           <section class="customer-grid">
             <article class="customer-info-card">
               <small>Rental</small>
@@ -1553,6 +1553,7 @@
           <article class="profile-card"><small>Due today</small><h3 class="${balance ? "text-danger" : "text-success"}">${money(balance)}</h3><p>${rental.returnDate ? "Final prorated balance after return." : "Only installments due by today, plus the deposit, less payments."} Maintenance is excluded.</p></article>
           <article class="profile-card"><small>Checks</small><h3>${number(inspections.length)}</h3><p>${number(expenses.length)} linked expenses</p></article>
         </section>
+        ${installmentBreakdown(RentalMath.summary(rental, db.payments))}
         <section class="detail-grid">
           ${detail("Pickup", rental.pickupLocation)}
           ${detail("Status", rental.returnDate ? "Returned" : rental.status)}
@@ -1812,6 +1813,11 @@
   function renderTimeline(items) {
     if (!items.length) return emptyBox("No activity", "Actions linked to this record will appear here.");
     return `<section class="timeline">${items.map((item) => `<article><span>${iconSvg(addIcon(item.type))}</span><div><b>${esc(item.message)}</b><small>${new Date(item.time).toLocaleString()}</small></div></article>`).join("")}</section>`;
+  }
+
+  function installmentBreakdown(billing) {
+    if (!billing?.allocations?.length) return '';
+    return `<section class="simple-section embedded installment-breakdown"><h3>Monthly payment breakdown</h3><p>Payments clear the oldest unpaid rent first, even when paid late. Any contract deposit is covered first. Future installments are not due yet.</p>${table(['Due date', 'Charge', 'Applied', 'Remaining', 'Status'], billing.allocations.map(row => [esc(shortDate(row.dueDate)) + (row.kind === 'Deposit' ? '<br>Deposit' : ''), money(row.amount), money(row.paid), money(row.remaining), esc(row.status)]))}<p><b>Due today: ${money(billing.due)}</b> · Received: ${money(billing.received)}${billing.credit ? ' · Credit above contract: ' + money(billing.credit) : ''}</p></section>`;
   }
 
   function table(headers, rows, emptyText) {

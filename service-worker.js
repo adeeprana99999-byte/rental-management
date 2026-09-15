@@ -1,4 +1,4 @@
-const CACHE_NAME = "rental-management-shell-v13-linkage-audit";
+const CACHE_NAME = "rental-management-shell-v14-installment-breakdown";
 const APP_SHELL = [
   "/",
   "/index.html",

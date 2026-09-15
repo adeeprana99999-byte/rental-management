@@ -53,3 +53,29 @@ test('credits are retained and unreturned historical contracts preserve their ca
   rental.returnDate = '2026-08-31';
   assert.equal(math.summary(rental, [{ rentalId: 'r1', amount: 3200 }]).credit, 200);
 });
+
+
+test('late payments clear oldest rent first and expose each monthly balance', () => {
+  const rental = { id: 'fifo', startDate: '2026-06-30', endDate: '2026-12-31', monthlyRate: 450, deposit: 0 };
+  const payments = [{ rentalId: 'fifo', date: '2026-09-10', amount: 600 }, { rentalId: 'other', amount: 1000 }, { rentalId: 'fifo', date: '2026-09-20', amount: 750 }];
+  const before = math.summary(rental, payments, '2026-09-09');
+  assert.equal(before.received, 0);
+  const now = math.summary(rental, payments, '2026-09-14');
+  assert.deepEqual(now.allocations.slice(0, 3).map(r => [r.dueDate, r.paid, r.remaining, r.status]), [['2026-06-30', 450, 0, 'Paid'], ['2026-07-30', 150, 300, 'Partly paid'], ['2026-08-30', 0, 450, 'Overdue']]);
+  assert.equal(now.due, 750); assert.equal(now.nextDueDate, '2026-09-30');
+  assert.equal(now.allocations[3].status, 'Upcoming');
+  const later = math.summary(rental, payments, '2026-09-20');
+  assert.equal(later.due, 0); assert.deepEqual(later.allocations.slice(0, 3).map(r => r.remaining), [0,0,0]);
+  rental.startDate = '2026-07-30';
+  assert.equal(math.summary(rental, payments, '2026-09-14').due, 300);
+});
+
+test('allocation reconciles deposits, prepayments, return proration and excess credit', () => {
+  const rental = { id: 'fifo', startDate: '2026-07-30', endDate: '2026-12-31', returnDate: '2026-09-10', monthlyRate: 450, deposit: 100 };
+  const value = math.summary(rental, [{ rentalId: 'fifo', amount: 2000 }], '2026-09-14');
+  assert.equal(value.allocations[0].kind, 'Deposit');
+  assert.equal(math.round(value.allocations.reduce((s,r) => s+r.paid, 0) + value.credit), value.received);
+  assert.ok(value.allocations.every(r => r.remaining === 0));
+  rental.cancelledAt = '2026-09-14';
+  assert.deepEqual(math.summary(rental, [], '2026-09-14').allocations, []);
+});
