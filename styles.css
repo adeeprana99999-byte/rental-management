@@ -3219,3 +3219,8 @@ button:is([data-action="edit-contract"], [data-action="edit-customer"], [data-ac
 .finance-pagination { display: flex; gap: 12px; justify-content: space-between; align-items: center; flex-wrap: wrap; padding-top: 16px; }
 .finance-pagination p { font-size: 12px; }
 .finance-pagination button { min-height: 44px; padding: 10px 16px; }
+
+.vehicle-renewals { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; margin: 16px 0; }
+.vehicle-renewals .profile-card { min-width: 0; overflow-wrap: anywhere; }
+.vehicle-renewals button { min-height: 44px; padding: 10px 14px; }
+@media(max-width:600px) { .vehicle-renewals { grid-template-columns:minmax(0,1fr); } }

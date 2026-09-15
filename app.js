@@ -615,7 +615,14 @@
         });
       }
     });
+    db.vehicles.filter(vehicle=>vehicle.status!=='inactive').forEach(vehicle=>{
+      for (const kind of ['registration','insurance']) {
+        const expiry=vehicleRenewalExpiry(vehicle,kind);
+        if (RentalMath.date(expiry) && expiry<=addDays(30)) alerts.push({id:'renewal_'+kind+'_'+vehicle.id,tone:expiry<todayKey()?'danger':'warning',title:kind==='registration'?'Registration renewal due':'Vehicle insurance renewal due',meta:vehicle.unit+' / '+shortDate(expiry),value:renewalStatus(expiry),view:'fleet',vehicleId:vehicle.id});
+      }
+    });
     db.documents.forEach((doc) => {
+      if (doc.supersededAt || (doc.ownerType === 'vehicle' && ['Registration','Vehicle insurance'].includes(doc.type))) return;
       if (doc.expiryDate && doc.expiryDate >= todayKey() && doc.expiryDate <= addDays(30)) {
         alerts.push({
           id: "doc_" + doc.id,
@@ -1173,6 +1180,56 @@
     </button>`;
   }
 
+  function vehicleRenewalExpiry(vehicle, kind) {
+    const stored = vehicle[kind === 'registration' ? 'registrationExpiry' : 'insuranceExpiry'];
+    if (stored) return stored;
+    const type = kind === 'registration' ? 'Registration' : 'Vehicle insurance';
+    return documentsFor('vehicle', vehicle.id).filter(doc => doc.type === type && !doc.supersededAt && RentalMath.date(doc.expiryDate)).map(doc => doc.expiryDate).sort().pop() || '';
+  }
+
+  function renewalStatus(expiry) {
+    if (!RentalMath.date(expiry)) return 'Expiry not saved';
+    const days = Math.round((RentalMath.date(expiry) - RentalMath.date(todayKey())) / 86400000);
+    return days < 0 ? 'Overdue by ' + Math.abs(days) + ' days' : days === 0 ? 'Expires today' : 'Renews in ' + days + ' days';
+  }
+
+  function vehicleRenewalCards(vehicle) {
+    return '<section class="vehicle-renewals">' + ['registration','insurance'].map(kind => {
+      const expiry = vehicleRenewalExpiry(vehicle, kind), type = kind === 'registration' ? 'Registration' : 'Vehicle insurance';
+      const currentDoc = documentsFor('vehicle', vehicle.id).find(doc => doc.type === type && !doc.supersededAt && doc.fileData);
+      return '<article class="profile-card"><small>' + (kind === 'registration' ? 'Registration / plate renewal' : 'Vehicle insurance') + '</small><h3>' + esc(renewalStatus(expiry)) + '</h3><p>' + (expiry ? 'Expiry: ' + esc(shortDate(expiry)) : 'Add an expiry date to track renewals.') + '</p><p>' + esc(kind === 'registration' ? vehicle.plate || 'Plate not saved' : [vehicle.insuranceProvider, vehicle.insurancePolicy].filter(Boolean).join(' · ') || 'Provider / policy not saved') + '</p><div class="row-actions"><button class="soft-btn" data-action="vehicle-renewal" data-kind="' + kind + '" data-id="' + esc(vehicle.id) + '">' + (kind === 'registration' ? 'Record registration renewal' : 'Record insurance renewal') + '</button>' + (currentDoc ? '<button class="soft-btn" data-action="open-document" data-id="' + esc(currentDoc.id) + '">Open document</button>' : '') + '</div></article>';
+    }).join('') + '</section>' + ((vehicle.renewalHistory || []).length ? '<details class="more-details"><summary>Registration & insurance history (' + vehicle.renewalHistory.length + ')</summary>' + vehicle.renewalHistory.slice().reverse().map(row => '<section class="return-settlement"><b>' + esc(tabLabel(row.kind)) + ' · ' + esc(shortDate(row.date)) + '</b><p>Expiry ' + esc(shortDate(row.expiryDate)) + ' · ' + money(row.cost) + ' paid</p><p>' + esc(row.kind === 'registration' ? row.plate : [row.provider,row.policy].filter(Boolean).join(' · ')) + '</p>' + (row.documentId ? '<button class="soft-btn" data-action="open-document" data-id="' + esc(row.documentId) + '">Open document</button>' : '') + '</section>').join('') + '</details>' : '');
+  }
+
+  function vehicleRenewalForm() {
+    if (auth?.role !== 'staff') return '';
+    const vehicle = vehicleById(ui.prefill.vehicleId), kind = ui.prefill.kind;
+    if (!vehicle) return '<p>Vehicle no longer available.</p>';
+    return '<form class="record-form" data-form="vehicle-renewal">' + hiddenField('vehicleId',vehicle.id) + hiddenField('kind',kind) + '<h3>' + esc(vehicle.unit) + ' · ' + (kind === 'registration' ? 'Registration / plate renewal' : 'Vehicle insurance renewal') + '</h3><div class="form-grid">' + field('Renewal date','date',todayKey(),'date',true) + field('New expiry date','expiryDate',vehicleRenewalExpiry(vehicle,kind),'date',true) + (kind === 'registration' ? field('Plate number','plate',vehicle.plate,'text',true) : field('Insurance provider','provider',vehicle.insuranceProvider,'text',true) + field('Policy number','policy',vehicle.insurancePolicy,'text',true)) + field('Amount paid (optional)','cost','','number',false,'0.01') + selectField('Payment method','method',['Card','Fleet card','ACH','Cash','Other'],'Card') + fileField('Renewal document / photo (optional)','file','image/*,.pdf',false) + textarea('Notes','notes','') + '</div><p>Any amount paid is added once to Finance as a vehicle expense. It does not change rent owed by the customer. Alerts appear 30 days before expiry and remain after expiry.</p><footer><button type="button" class="soft-btn" data-action="close-modal">Cancel</button><button class="primary-add">Save renewal</button></footer></form>';
+  }
+
+  async function saveVehicleRenewal(data) {
+    if (auth?.role !== 'staff') throw new Error('Only staff can record a vehicle renewal.');
+    const kind=data.kind, vehicle=vehicleById(data.vehicleId), cost=Number(data.cost || 0);
+    if (!vehicle || !['registration','insurance'].includes(kind)) throw new Error('Choose an existing vehicle and renewal type.');
+    if (!RentalMath.date(data.date) || data.date > todayKey() || !RentalMath.date(data.expiryDate) || data.expiryDate < data.date) throw new Error('Enter a renewal date no later than today and an expiry date on or after the renewal date.');
+    if (!Number.isFinite(cost) || cost < 0) throw new Error('Renewal cost must be zero or a positive amount.');
+    if (kind === 'registration' ? !String(data.plate || '').trim() : !String(data.provider || '').trim() || !String(data.policy || '').trim()) throw new Error('Enter the plate number, or insurance provider and policy number.');
+    const upload=await readUpload(data.file);
+    if (vehicleById(data.vehicleId) !== vehicle) throw new Error('Vehicle changed while uploading. Reopen the renewal form.');
+    const at=new Date().toISOString(), id=uid('renewal'), type=kind === 'registration' ? 'Registration' : 'Vehicle insurance';
+    const row={id,kind,date:data.date,expiryDate:data.expiryDate,cost:RentalMath.round(cost),plate:String(data.plate || vehicle.plate || '').trim(),provider:String(data.provider || '').trim(),policy:String(data.policy || '').trim(),notes:String(data.notes || '').trim(),recordedAt:at,previousExpiry:vehicleRenewalExpiry(vehicle,kind),documentId:'',expenseId:''};
+    documentsFor('vehicle',vehicle.id).filter(doc=>doc.type===type && !doc.supersededAt).forEach(doc=>{doc.supersededAt=at;});
+    if (upload.fileData) { row.documentId=uid('doc'); db.documents.unshift({id:row.documentId,ownerType:'vehicle',ownerId:vehicle.id,type,...upload,expiryDate:data.expiryDate,notes:row.notes}); }
+    if (row.cost > 0) { row.expenseId=uid('exp'); db.expenses.unshift({id:row.expenseId,vehicleId:vehicle.id,rentalId:'',maintenanceId:'',renewalId:id,date:data.date,category:kind==='registration'?'Registration renewal':'Vehicle insurance',amount:row.cost,paymentMethod:data.method || 'Other',status:'paid',notes:row.notes}); }
+    if (kind === 'registration') Object.assign(vehicle,{plate:row.plate,registrationExpiry:data.expiryDate,registrationRenewalDate:data.date});
+    else Object.assign(vehicle,{insuranceProvider:row.provider,insurancePolicy:row.policy,insuranceExpiry:data.expiryDate,insuranceRenewalDate:data.date});
+    vehicle.renewalHistory=[...(vehicle.renewalHistory || []),row];
+    ui.view='fleet';ui.fleetMode='profile';ui.vehicleId=vehicle.id;
+    addActivity('vehicle',type+' renewal recorded for '+vehicle.unit,'vehicle',vehicle.id,{vehicleId:vehicle.id});
+    commit('Renewal saved. Vehicle, documents and finance updated.');
+  }
+
   function renderVehicleProfile(vehicle) {
     if (!vehicleTabs.includes(ui.vehicleTab)) ui.vehicleTab = "info";
     const rental = activeRentalForVehicle(vehicle.id);
@@ -1201,6 +1258,7 @@
           ])}
         </div>
       </header>
+      ${vehicleRenewalCards(vehicle)}
       <nav class="tabs">${vehicleTabs.map((tab) => `<button class="${ui.vehicleTab === tab ? "active" : ""}" data-action="vehicle-tab" data-tab="${tab}">${tabLabel(tab)}</button>`).join("")}</nav>
       ${renderVehicleTab(vehicle, rental, customer, balance)}
     `;
@@ -1962,6 +2020,7 @@
   }
 
   function renderForm(type) {
+    if (type === "vehicle-renewal") return vehicleRenewalForm();
     if (type === "payment-correction") return paymentCorrectionForm();
     if (type === "manage-record") return manageRecordForm();
     if (type === "cancel-assignment") return cancelAssignmentForm();
@@ -2480,6 +2539,7 @@
       commit("Settings updated.");
       return;
     }
+    if (type === "vehicle-renewal") return saveVehicleRenewal(data);
     if (type === "payment-correction") return savePaymentCorrection(data);
     if (type === "return") return saveRentalReturn(data);
     if (type === "contract") return saveContract(data);
@@ -3100,6 +3160,10 @@
     if (action === "cancel-assignment") {
       if (auth?.role !== "staff" || !rentalById(button.dataset.id) || rentalById(button.dataset.id).cancelledAt) return;
       ui.modal = "cancel-assignment"; ui.prefill = { rentalId: button.dataset.id }; ui.actionMenu = ""; render(); return;
+    }
+    if (action === "vehicle-renewal") {
+      if (auth?.role !== 'staff') return;
+      ui.modal='vehicle-renewal';ui.prefill={vehicleId:button.dataset.id,kind:button.dataset.kind};ui.actionMenu='';render();return;
     }
     if (action === "correct-payment") {
       if (auth?.role !== 'staff') return;

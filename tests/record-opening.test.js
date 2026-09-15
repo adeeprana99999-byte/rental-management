@@ -55,7 +55,9 @@ function frontend(data) {
     ['rental_management_real_app_v1', JSON.stringify(data)],
     ['rental_management_session_v1', JSON.stringify({ role: 'staff', user: { name: 'Test Staff' } })]
   ]);
+  class TestDate extends Date { constructor(...args) { super(...(args.length ? args : ['2026-09-14T12:00:00'])); } static now() { return new Date('2026-09-14T12:00:00').getTime(); } }
   const context = vm.createContext({
+    Date: TestDate,
     document: { getElementById: () => app, addEventListener: (type, handler) => { events[type] = handler; } },
     localStorage: { getItem: key => cache.get(key), setItem: (key, value) => cache.set(key, value) },
     RentalMath: require("../rental-math"),
@@ -63,9 +65,11 @@ function frontend(data) {
     setTimeout: () => 0, clearTimeout() {}, alert: message => { throw new Error(message); }
   });
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { savePaymentCorrection, rentalPaid, vehicleRevenue, customerRevenue, financeTotals, financeEntries, saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract, saveAssignmentCancellation, saveRental, saveRecordManagement, savePayment, saveMaintenance, saveInspection, saveExpense }; })();'), context);
+  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicleRenewal, alertItems, savePaymentCorrection, rentalPaid, vehicleRevenue, customerRevenue, financeTotals, financeEntries, saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract, saveAssignmentCancellation, saveRental, saveRecordManagement, savePayment, saveMaintenance, saveInspection, saveExpense }; })();'), context);
   return {
     app,
+    saveVehicleRenewal: context.testApp.saveVehicleRenewal,
+    alertItems: context.testApp.alertItems,
     savePaymentCorrection: context.testApp.savePaymentCorrection,
     rentalPaid: context.testApp.rentalPaid,
     vehicleRevenue: context.testApp.vehicleRevenue,
@@ -510,4 +514,18 @@ test('payment edit, void and restore preserve identity, history and all financia
  for(const amount of [-1,0,0.001,'bad']) assert.throws(()=>reload.savePaymentCorrection({paymentId:'payment',operation:'edit',date:'2026-05-24',amount,reason:'Invalid'}),/positive amount/);
  assert.throws(()=>reload.savePaymentCorrection({paymentId:'payment',operation:'void',reason:''}),/reason/);
  assert.deepEqual(reload.savedData(),before);
+});
+
+
+test('vehicle renewals update expiry, preserve history, create costs once and keep renter charges separate', async () => {
+ const data=assignmentData();data.documents=[{id:'oldreg',ownerType:'vehicle',ownerId:'old',type:'Registration',expiryDate:'2026-09-20'}];
+ const page=frontend(data);const math=require('../rental-math');const before=math.summary(data.rentals[0],data.payments).due;
+ await page.saveVehicleRenewal({vehicleId:'old',kind:'registration',plate:'NEW PLATE',date:'2026-09-14',expiryDate:'2027-09-14',cost:120,method:'Card'});
+ let saved=page.savedData();assert.equal(saved.vehicles[0].registrationExpiry,'2027-09-14');assert.equal(saved.vehicles[0].plate,'NEW PLATE');assert.equal(saved.expenses.length,1);assert.equal(saved.expenses[0].amount,120);assert.ok(saved.documents[0].supersededAt);
+ await page.saveVehicleRenewal({vehicleId:'old',kind:'insurance',provider:'Test Insurer',policy:'POLICY-123',date:'2026-09-14',expiryDate:'2026-10-01',cost:200,method:'ACH'});
+ saved=page.savedData();assert.equal(saved.vehicles[0].renewalHistory.length,2);assert.equal(saved.vehicles[0].insuranceProvider,'Test Insurer');assert.equal(saved.expenses.length,2);assert.equal(math.summary(saved.rentals[0],saved.payments).due,before);
+ assert.ok(page.alertItems().some(a=>a.id==='renewal_insurance_old'));assert.ok(!page.alertItems().some(a=>a.id==='doc_oldreg'));
+ const publicVehicle=server.sanitizeCustomerVehicle(saved.vehicles[0]);assert.equal(publicVehicle.renewalHistory,undefined);assert.equal(publicVehicle.insuranceExpiry,'2026-10-01');
+ const reload=frontend(saved);reload.click({action:'select-vehicle',id:'old'});assert.match(reload.app.innerHTML,/Record registration renewal/);assert.match(reload.app.innerHTML,/POLICY-123/);
+ const original=reload.savedData();await assert.rejects(reload.saveVehicleRenewal({vehicleId:'old',kind:'registration',plate:'NEW',date:'2026-09-14',expiryDate:'2026-08-01'}),/expiry date/);assert.deepEqual(reload.savedData(),original);
 });

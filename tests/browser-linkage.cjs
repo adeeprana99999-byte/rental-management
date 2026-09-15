@@ -12,6 +12,7 @@ async function test(engine, width) {
   let customerMode = false;
   const browser = await (engine === 'webkit' ? webkit.launch() : chromium.launch(process.env.EDGE_PATH ? { executablePath: process.env.EDGE_PATH } : {}));
   const page = await browser.newPage({ viewport: { width, height: width === 844 ? 390 : 844 }, serviceWorkers: 'block' });
+  await page.clock.install({time:new Date('2026-09-14T12:00:00')});
   page.setDefaultTimeout(10000); const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('dialog', dialog => { errors.push(dialog.message()); void dialog.dismiss(); });
@@ -84,6 +85,16 @@ async function test(engine, width) {
   await go('rentals'); await page.getByRole('button', { name: 'Closed', exact: true }).click(); await page.getByRole('button', { name: 'Pay', exact: true }).click(); await field('date', '2026-09-14'); await field('amount', 280); await save('payment'); assert.equal(math.summary(saved.rentals[0], saved.payments).due, 0);
   for (const view of ['dashboard', 'fleet', 'rentals', 'customers', 'documents', 'finance', 'reports', 'alerts', 'settings']) { await go(view); assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `overflow ${view} ${width}: ${JSON.stringify(await page.evaluate(() => [...document.querySelectorAll(".content *")].filter(e => e.getBoundingClientRect().right > innerWidth + 1).slice(0, 12).map(e => ({tag:e.tagName,cls:e.className,width:e.getBoundingClientRect().width,text:e.innerText?.slice(0,40)}))))}`); }
   await go('documents'); await page.locator('footer [data-action=open-document]').first().click(); await page.waitForFunction(() => document.querySelector('.document-preview-image')?.naturalWidth > 0, null, { timeout: 5000 });
+  await page.locator('[data-action=close-modal]').first().click();
+  await go('fleet');await page.locator('[data-action=select-vehicle][data-id=test-v2]').first().click();
+  await page.getByRole('button',{name:'Record registration renewal',exact:true}).click();
+  await field('plate','TEST-PLATE');await field('date','2026-09-14');await field('expiryDate','2027-09-14');await field('cost',120);
+  await page.locator('input[name=file]').setInputFiles({name:'registration.png',mimeType:'image/png',buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64')});await save('vehicle-renewal');
+  assert.equal(saved.vehicles[1].registrationExpiry,'2027-09-14');assert.equal(saved.expenses.filter(e=>e.category==='Registration renewal').length,1);
+  await page.locator('.vehicle-renewals').getByRole('button',{name:'Open document',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.document-preview-image')?.naturalWidth>0);await page.locator('[data-action=close-modal]').first().click();
+  await page.getByRole('button',{name:'Record insurance renewal',exact:true}).click();await field('provider','Test Insurer');await field('policy','POLICY-123');await field('date','2026-09-14');await field('expiryDate','2026-10-01');await save('vehicle-renewal');
+  assert.equal(saved.vehicles[1].insurancePolicy,'POLICY-123');assert.equal(saved.vehicles[1].renewalHistory.length,2);assert.equal(math.summary(saved.rentals[0],saved.payments).due,0);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'renewal card overflow');
   saved.rentals.push({ ...saved.rentals[0], id: 'second-contract', status: 'active', returnDate: undefined, vehicleId: 'test-v1' }); customerMode = true;
   await go('rentals'); await page.locator('[data-portal-rental]').selectOption(rentalId); assert.equal(await page.locator('[data-form=customer-checkin]').count(), 0);
   await page.getByRole('heading', { name: 'Payment history', exact: true }).waitFor(); await checkDetails();

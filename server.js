@@ -305,6 +305,7 @@ function sanitizeCustomerVehicle(vehicle) {
   delete clean.acquisitionCost;
   delete clean.loanBalance;
   delete clean.monthlyPayment;
+  delete clean.renewalHistory;
   return clean;
 }
 
