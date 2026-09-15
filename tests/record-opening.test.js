@@ -63,9 +63,11 @@ function frontend(data) {
     setTimeout: () => 0, clearTimeout() {}, alert: message => { throw new Error(message); }
   });
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract, saveAssignmentCancellation, saveRental, saveRecordManagement, savePayment, saveMaintenance, saveInspection, saveExpense }; })();'), context);
+  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { financeTotals, financeEntries, saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract, saveAssignmentCancellation, saveRental, saveRecordManagement, savePayment, saveMaintenance, saveInspection, saveExpense }; })();'), context);
   return {
     app,
+    financeTotals: context.testApp.financeTotals,
+    financeEntries: context.testApp.financeEntries,
     saveVehicle: context.testApp.saveVehicle,
     saveCustomer: context.testApp.saveCustomer,
     saveVehicleChange: context.testApp.saveVehicleChange,
@@ -451,4 +453,15 @@ test('customer editing prefills, cancels, and preserves linked records after sav
   page.saveCustomer({ ...correction, editCustomerId: '', name: 'New Customer', phone: '3125550102' });
   assert.equal(page.savedData().customers.length, 3);
   assert.match(page.savedData().customers[0].id, /^cus_/);
+});
+
+
+test('finance totals distinguish paid and unsettled costs without counting maintenance twice', () => {
+  const page = frontend(dataset([]));
+  const rows = [{ amount: 600, type: 'income' }, { amount: 464, type: 'income' }, { amount: -76, type: 'expense', status: 'paid' }, { amount: -38, type: 'expense', status: 'paid' }, { amount: -410, type: 'expense', status: 'pending' }];
+  assert.deepEqual(JSON.parse(JSON.stringify(page.financeTotals(rows))), { income: 1064, paid: 114, pending: 410, maintenance: 0, costs: 524, net: 540, cash: 950 });
+  const extra = page.financeTotals(rows.concat({ amount: -100, type: 'maintenance', status: 'paid' }, { amount: -25, type: 'expense', status: 'reimbursable' }));
+  assert.equal(extra.maintenance, 100); assert.equal(extra.costs, 649); assert.equal(extra.paid, 214); assert.equal(extra.pending, 435); assert.equal(extra.net, 415);
+  assert.equal(page.financeTotals([]).net, 0);
+  assert.equal(page.financeTotals([{ amount: -10, status: 'paid', type: 'expense' }]).net, -10);
 });

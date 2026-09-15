@@ -646,7 +646,7 @@
         rentalId: payment.rentalId,
         vehicleId: payment.vehicleId,
         customerId: payment.customerId,
-        status: rental?.status || "paid"
+        status: "received"
       };
     });
     const expenses = db.expenses.map((expense) => ({
@@ -654,11 +654,11 @@
       date: expense.date,
       type: expense.category === "Maintenance payment" ? "maintenance" : "expense",
       label: expense.category,
-      party: expense.paymentMethod || "Payment",
+      party: expense.maintenanceId ? db.maintenance.find(item => item.id === expense.maintenanceId)?.shop || "Business expense" : "Business expense",
       vehicle: vehicleById(expense.vehicleId)?.unit || "Vehicle",
       amount: -Math.abs(Number(expense.amount || 0)),
       method: expense.paymentMethod || "",
-      reference: expense.status || "",
+      reference: expense.reference || "",
       rentalId: expense.rentalId || "",
       vehicleId: expense.vehicleId,
       customerId: rentalById(expense.rentalId)?.customerId || "",
@@ -1572,28 +1572,46 @@
     `;
   }
 
+  function financeTotals(entries) {
+    const sum = rows => RentalMath.round(rows.reduce((total, row) => total + Math.abs(row.amount), 0));
+    const costs = entries.filter(row => row.amount < 0);
+    const income = sum(entries.filter(row => row.amount > 0));
+    const paid = sum(costs.filter(row => row.status === 'paid'));
+    const pending = sum(costs.filter(row => row.status !== 'paid'));
+    const maintenance = sum(costs.filter(row => row.type === 'maintenance'));
+    return { income, paid, pending, maintenance, costs: sum(costs), net: RentalMath.round(income - sum(costs)), cash: RentalMath.round(income - paid) };
+  }
+
   function renderFinance() {
     const all = financeEntries().filter(entry => !ui.financeMonth || String(entry.date || "").slice(0, 7) === ui.financeMonth);
-    const entries = all.filter((entry) => ui.financeFilter === "all" || entry.type === ui.financeFilter);
-    const revenue = all.filter((entry) => entry.amount > 0).reduce((sum, entry) => sum + entry.amount, 0);
-    const expense = all.filter((entry) => entry.amount < 0).reduce((sum, entry) => sum + Math.abs(entry.amount), 0);
-    return `
-      <section class="page-title">
-        <div><small>Owner / staff only</small><h2>Monthly income and costs</h2><label>Month<input type="month" data-finance-month value="${esc(ui.financeMonth)}"></label><p>Maintenance and expenses reduce business net only. They do not reduce rent received or alter the customer balance.</p></div>
-        <div class="title-actions"><button class="primary-add" data-action="open-add" data-type="payment">+ Payment</button><button class="soft-btn" data-action="open-add" data-type="expense">Expense</button></div>
+    const entries = all.filter(entry => ui.financeFilter === "all" || entry.type === ui.financeFilter);
+    const totals = financeTotals(all);
+    const scale = Math.max(totals.income, totals.costs, 1);
+    const label = ui.financeMonth ? new Date(ui.financeMonth + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 'All recorded months';
+    const margin = totals.income ? Math.round(totals.net / totals.income * 100) : null;
+    const balances = db.rentals.reduce((sum, rental) => sum + rentalBalance(rental), 0);
+    return `<section class="finance-dashboard">
+      <section class="page-title finance-heading">
+        <div><small>Owner / staff only</small><h2>Money overview</h2><p>Income, costs and what remains — in one place.</p></div>
+        <div class="title-actions"><label class="finance-month">Month<input type="month" aria-label="Finance month" data-finance-month value="${esc(ui.financeMonth)}"></label><button class="primary-add" data-action="open-add" data-type="payment">+ Payment</button><button class="soft-btn" data-action="open-add" data-type="expense">+ Expense</button></div>
       </section>
-      <section class="metric-grid tight">
-        ${metric("Income", money(revenue), "customer payments", "green")}
-        ${metric("Maintenance", money(all.filter(e => e.type === "maintenance").reduce((sum, e) => sum + Math.abs(e.amount), 0)), "internal cost", "amber")}
-        ${metric("Expenses", money(expense), "all maintenance and operations", "amber")}
-        ${metric("Net", money(revenue - expense), "cash result", revenue - expense >= 0 ? "green" : "danger")}
-        ${metric("Open balances", money(db.rentals.reduce((sum, rental) => sum + rentalBalance(rental), 0)), "still collectible", "blue")}
+      <section class="finance-hero">
+        <div class="finance-result"><span class="finance-eyebrow">${esc(label)}</span><h3>After all recorded costs</h3><strong class="finance-result-amount">${money(totals.net)}</strong><p>${totals.net < 0 ? 'Costs exceed income for this period.' : 'Income remaining after paid and unpaid costs.'}</p><span class="finance-margin">${margin === null ? 'No income recorded yet' : margin + '% of income remaining'}</span></div>
+        <div class="finance-equation"><h3>How it adds up</h3><div><span>Payments received</span><b>${money(totals.income)}</b></div><div><span>Paid costs</span><b>− ${money(totals.paid)}</b></div><div><span>Unpaid / reimbursable costs</span><b>− ${money(totals.pending)}</b></div><div class="finance-equation-total"><span>Remaining after costs</span><b>${money(totals.net)}</b></div><p>Before unpaid costs: ${money(totals.cash)}. This is a recorded activity total, not a bank balance.</p></div>
       </section>
-      <nav class="tabs filter-tabs">
-        ${["all", "income", "expense", "maintenance"].map((filter) => `<button class="${ui.financeFilter === filter ? "active" : ""}" data-action="finance-filter" data-filter="${filter}">${tabLabel(filter)}</button>`).join("")}
-      </nav>
-      ${financeTable(entries)}
-    `;
+      <section class="finance-kpis">
+        ${metric('Received', money(totals.income), 'customer payments this period', 'green')}
+        ${metric('Paid costs', money(totals.paid), 'expenses marked paid', 'amber')}
+        ${metric('Unpaid costs', money(totals.pending), 'pending or reimbursable', totals.pending ? 'amber' : 'green')}
+        ${metric('Customers owe', money(balances), 'due today · across all months', 'blue')}
+      </section>
+      <section class="finance-breakdown panel"><div><h3>Income vs. costs</h3><p>Maintenance is included once in costs. Customer rent balances stay separate.</p></div><div class="finance-bars">
+        <div><span>Income <b>${money(totals.income)}</b></span><div class="finance-bar-track" aria-hidden="true"><i style="width:${totals.income / scale * 100}%"></i></div></div>
+        <div><span>Costs <b>${money(totals.costs)}</b></span><div class="finance-bar-track costs" aria-hidden="true"><i style="width:${totals.costs / scale * 100}%"></i></div></div>
+        <p>Operating expenses: ${money(RentalMath.round(totals.costs - totals.maintenance))} · Maintenance payments: ${money(totals.maintenance)}</p>
+      </div></section>
+      <section class="finance-transactions panel"><header><div><h3>Transactions</h3><p>${entries.length} ${entries.length === 1 ? 'record' : 'records'} · ${esc(label)}</p></div><nav class="tabs filter-tabs" aria-label="Transaction type">${['all','income','expense','maintenance'].map(filter => `<button class="${ui.financeFilter === filter ? 'active' : ''}" data-action="finance-filter" data-filter="${filter}">${tabLabel(filter)} <span>${filter === 'all' ? all.length : all.filter(row => row.type === filter).length}</span></button>`).join('')}</nav></header>${financeTable(entries)}</section>
+    </section>`;
   }
 
   function renderReports() {
@@ -1683,14 +1701,14 @@
   }
 
   function financeTable(entries) {
-    return table(["Date", "Type", "Vehicle", "Party", "Amount", "Method"], entries.map((entry) => [
-      `<b>${shortDate(entry.date)}</b><small>${esc(entry.status)}</small>`,
-      `<b>${esc(entry.label)}</b><small>${esc(entry.type)}</small>`,
-      entry.vehicleId ? `<button class="table-link" data-action="select-vehicle" data-id="${esc(entry.vehicleId)}"><b>${esc(entry.vehicle)}</b><small>${esc(entry.reference || "")}</small></button>` : `<b>${esc(entry.vehicle)}</b>`,
-      entry.customerId ? `<button class="table-link" data-action="select-customer" data-id="${esc(entry.customerId)}"><b>${esc(entry.party)}</b><small>${esc(entry.reference || "")}</small></button>` : `<b>${esc(entry.party)}</b><small>${esc(entry.reference || "")}</small>`,
-      `<b class="${entry.amount >= 0 ? "text-success" : "text-danger"}">${money(Math.abs(entry.amount))}</b>`,
-      `<b>${esc(entry.method || "Not recorded")}</b>`
-    ]), "No transactions yet.");
+    return `<div class="finance-ledger">${table(["Date", "Transaction", "Vehicle", "Customer / payee", "Amount", "Method / reference"], entries.map((entry) => [
+      `<b>${shortDate(entry.date)}</b>`,
+      `<b>${esc(entry.label)}</b><small>${esc(entry.status === "received" ? "Received" : tabLabel(entry.status))}</small>`,
+      entry.vehicleId ? `<button class="table-link" data-action="select-vehicle" data-id="${esc(entry.vehicleId)}"><b>${esc(entry.vehicle)}</b></button>` : `<b>${esc(entry.vehicle)}</b>`,
+      entry.customerId ? `<button class="table-link" data-action="select-customer" data-id="${esc(entry.customerId)}"><b>${esc(entry.party)}</b></button>` : `<b>${esc(entry.party)}</b>`,
+      `<b class="${entry.amount >= 0 ? "text-success" : "text-danger"}">${entry.amount >= 0 ? "+" : "−"}${money(Math.abs(entry.amount))}</b>`,
+      `<b>${esc(entry.method || "Not recorded")}</b>${entry.reference ? `<small>${esc(entry.reference)}</small>` : ""}`
+    ]), "No transactions in this period.")}</div>`;
   }
 
   function vehicleMiniCard(vehicle) {
