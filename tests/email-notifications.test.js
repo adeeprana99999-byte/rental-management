@@ -55,3 +55,12 @@ test('disabled email and pre-activation receipts never send', async () => {
   await emails.run(db, { enabled: true, key: 'test', from: 'sender@example.test', timezone: 'America/New_York' }, transport);
   assert.equal(sends, 0);
 });
+
+
+test('ongoing rentals keep generating renewal reminders in later months', () => {
+ const fixture=data(); fixture.rentals[0].endDate='';
+ const reminders=emails.messages(fixture,'2027-05-11');
+ assert.equal(reminders.length,1); assert.equal(reminders[0].dueDate,'2027-05-14');
+ fixture.rentals[0].returnDate='2027-04-20'; fixture.rentals[0].status='closed';
+ assert.equal(emails.messages(fixture,'2027-05-11').length,0);
+});

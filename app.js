@@ -425,9 +425,9 @@
 
   function rangesOverlap(startA, endA, startB, endB) {
     const aStart = dateValue(startA);
-    const aEnd = dateValue(endA);
+    const aEnd = endA ? dateValue(endA) : Infinity;
     const bStart = dateValue(startB);
-    const bEnd = dateValue(endB);
+    const bEnd = endB ? dateValue(endB) : Infinity;
     if (!aStart || !aEnd || !bStart || !bEnd) return false;
     return aStart <= bEnd && bStart <= aEnd;
   }
@@ -460,7 +460,7 @@
   }
 
   function rentalPeriod(rental) {
-    return shortDate(rental.startDate) + ' to ' + shortDate(rental.returnDate || rental.endDate);
+    return shortDate(rental.startDate) + " to " + (rental.returnDate || rental.endDate ? shortDate(rental.returnDate || rental.endDate) : "Ongoing");
   }
 
   function activeRentalForVehicle(vehicleId) {
@@ -560,9 +560,9 @@
       if (balance > 0 && rental.status !== "closed") {
         alerts.push({
           id: "balance_" + rental.id,
-          tone: rental.endDate < todayKey() ? "danger" : "warning",
+          tone: RentalMath.summary(rental, db.payments).overdue > 0 ? "danger" : "warning",
           title: "Open rental balance",
-          meta: `${customer?.name || "Customer"} / ${vehicle?.unit || "Vehicle"} / ${shortDate(rental.returnDate || rental.endDate)}`,
+          meta: `${customer?.name || "Customer"} / ${vehicle?.unit || "Vehicle"} / ${(rental.returnDate || rental.endDate ? shortDate(rental.returnDate || rental.endDate) : "Ongoing")}`,
           value: money(balance),
           view: "rentals",
           rentalId: rental.id,
@@ -575,7 +575,7 @@
           id: "return_" + rental.id,
           tone: "notice",
           title: "Return coming up",
-          meta: `${vehicle?.unit || "Vehicle"} due ${shortDate(rental.returnDate || rental.endDate)}`,
+          meta: `${vehicle?.unit || "Vehicle"} due ${(rental.returnDate || rental.endDate ? shortDate(rental.returnDate || rental.endDate) : "Ongoing")}`,
           value: customer?.name || "Customer",
           view: "fleet",
           vehicleId: rental.vehicleId,
@@ -925,7 +925,7 @@
           <section class="customer-grid">
             <article class="customer-info-card">
               <small>Rental</small>
-              <b>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</b>
+              <b>${esc(rentalPeriod(rental))}</b>
               <span>${esc(rental.pickupLocation || "Pickup location not saved")}</span>
             </article>
             <article class="customer-info-card">
@@ -1218,12 +1218,12 @@
         <article class="profile-card">
           <small>Current rental</small>
           <h3>${rental ? esc(customer?.name || "Customer") : vehicle.status === "available" ? "Available for rental" : esc(tabLabel(vehicle.status))}</h3>
-          <p>${rental ? `${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}` : esc(vehicle.location)}</p>
+          <p>${rental ? `${esc(rentalPeriod(rental))}` : esc(vehicle.location)}</p>
         </article>
         <article class="profile-card">
           <small>Balance</small>
           <h3>${money(balance)}</h3>
-          <p>${rental ? `${money(rentalPaid(rental.id))} received / ${money(rentalTotal(rental))} contract` : "No active rental balance"}</p>
+          <p>${rental ? `${money(rentalPaid(rental.id))} received / ${!rental.endDate && !rental.returnDate ? "ongoing monthly rental" : money(rentalTotal(rental)) + " contract"}` : "No active rental balance"}</p>
         </article>
         <article class="profile-card">
           <small>Service</small>
@@ -1360,7 +1360,7 @@
         </div>
       </header>
       <section class="simple-section"><h3>Assigned vehicles (${openRentals.length})</h3><p>${openRentals.length > 1 ? "This customer has multiple open contracts. Choose the exact vehicle below to edit, return, or remove an accidental assignment." : "Manage each assignment from its own contract."}</p>
-        ${openRentals.map(rental => `<section class="return-settlement"><h3>${esc(vehicleById(rental.vehicleId)?.unit || "Missing vehicle")}</h3><p>${esc(rental.status)} · ${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)} · Due today: ${money(rentalBalance(rental))}</p><div class="row-actions"><button class="soft-btn" data-action="select-rental" data-id="${esc(rental.id)}">Open contract</button><button class="soft-btn" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button><button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button></div></section>`).join("") || '<p>No open vehicle assignments.</p>'}
+        ${openRentals.map(rental => `<section class="return-settlement"><h3>${esc(vehicleById(rental.vehicleId)?.unit || "Missing vehicle")}</h3><p>${esc(rental.status)} · ${esc(rentalPeriod(rental))} · Due today: ${money(rentalBalance(rental))}</p><div class="row-actions"><button class="soft-btn" data-action="select-rental" data-id="${esc(rental.id)}">Open contract</button><button class="soft-btn" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button><button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button></div></section>`).join("") || '<p>No open vehicle assignments.</p>'}
       </section>
       <nav class="tabs">${customerTabs.map((tab) => `<button class="${ui.customerTab === tab ? "active" : ""}" data-action="customer-tab" data-tab="${tab}">${tabLabel(tab)}</button>`).join("")}</nav>
       ${renderCustomerTab(customer, rentals)}
@@ -1455,7 +1455,7 @@
         <div>${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}</div>
         <h3><button class="rental-name-link" data-action="select-rental" data-id="${esc(rental.id)}">${esc(customer?.name || "Customer")}</button></h3>
         <p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")}</p>
-        <small>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</small>
+        <small>${esc(rentalPeriod(rental))}</small>
       </div>
       <div class="simple-rental-side">
         <small>${rental.cancelledAt ? "Cancelled — no charges" : rental.status === "closed" ? "Unpaid final balance" : "Due today"}</small>
@@ -1477,7 +1477,7 @@
     return `<article class="rental-card ${ui.rentalId === rental.id ? "active" : ""}">
       <div><h4>${esc(customer?.name || "Customer")}</h4><p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")}</p></div>
       <div class="rental-card-lines">
-        <span>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</span>
+        <span>${esc(rentalPeriod(rental))}</span>
         <b class="${balance ? "text-danger" : "text-success"}">${money(balance)} balance</b>
       </div>
       <footer>
@@ -1502,7 +1502,7 @@
       <div class="compact-main">
         <span>Rental</span>
         <button class="rental-name-link compact" data-action="select-rental" data-id="${esc(rental.id)}">${esc(customer?.name || "Customer")}</button>
-        <small>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</small>
+        <small>${esc(rentalPeriod(rental))}</small>
       </div>
       <div class="compact-balance">
         ${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}
@@ -1525,7 +1525,7 @@
         <header class="profile-header compact">
           <div class="vehicle-title">
             <span class="plate icon-plate">${iconSvg("rentals")}</span>
-            <div><h2>${esc(customer?.name || "Customer")}</h2><p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")} / ${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</p></div>
+            <div><h2>${esc(customer?.name || "Customer")}</h2><p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")} / ${esc(rentalPeriod(rental))}</p></div>
           </div>
           <div class="profile-actions">
             ${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}
@@ -1617,7 +1617,7 @@
   function renderReports() {
     const vehicleRows = db.vehicles.map((vehicle) => {
       const rentals = rentalsForVehicle(vehicle.id);
-      const activeDays = rentals.reduce((sum, rental) => sum + daysBetween(rental.startDate, rental.endDate), 0);
+      const activeDays = rentals.reduce((sum, rental) => sum + daysBetween(rental.startDate, rental.returnDate || rental.endDate || todayKey()), 0);
       const revenue = vehicleRevenue(vehicle.id);
       const expenses = vehicleExpenses(vehicle.id);
       return { vehicle, rentals, activeDays, revenue, expenses, net: revenue - expenses };
@@ -1693,7 +1693,7 @@
         `<small>${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}</small>`,
         `<button class="table-link" data-action="select-vehicle" data-id="${esc(rental.vehicleId)}"><b>${esc(vehicle?.unit || "Vehicle")}</b><small>${esc(vehicle ? vehicle.make + " " + vehicle.model : "")}</small></button>`,
         `<button class="table-link" data-action="select-customer" data-id="${esc(rental.customerId)}"><b>${esc(customer?.name || "Customer")}</b><small>${esc(customer?.phone || "")}</small></button>`,
-        `<b>${shortDate(rental.startDate)}</b><small>Return ${shortDate(rental.returnDate || rental.endDate)}</small>`,
+        `<b>${shortDate(rental.startDate)}</b><small>Return ${(rental.returnDate || rental.endDate ? shortDate(rental.returnDate || rental.endDate) : "Ongoing")}</small>`,
         `<b class="${balance ? "text-danger" : "text-success"}">${money(balance)}</b><small>${money(rentalPaid(rental.id))} paid</small>`,
         `<div class="row-actions"><button class="mini-btn primary" data-action="select-rental" data-id="${esc(rental.id)}">Open</button>${rental.status !== "closed" ? `<button class="mini-btn" data-action="open-add" data-type="payment" data-rental-id="${esc(rental.id)}">Pay</button>` : ""}</div>`
       ];
@@ -1829,7 +1829,7 @@
   function installmentBreakdown(billing) {
     if (!billing) return '';
     const account = table(['Account summary', 'Amount / date'], [
-      ['Contract total', money(billing.total)], ['Total received', money(billing.received)],
+      [billing.ongoing ? 'Scheduled charges through ' + esc(shortDate(billing.scheduleThrough)) : 'Contract total', money(billing.total)], ['Total received', money(billing.received)],
       ...(billing.overdue > 0 ? [['Overdue now', money(billing.overdue)]] : []), ['Due today (includes overdue)', money(billing.due)],
       ...(billing.futureRent > 0 ? [['Future rent (not yet due)', money(billing.futureRent)]] : []),
       ['Next installment', billing.nextDueDate ? money(billing.nextAmount) + ' due ' + esc(shortDate(billing.nextDueDate)) : billing.due > 0 ? 'No upcoming installments. Unpaid balance: ' + money(billing.due) : billing.credit > 0 ? 'Fully paid. Credit: ' + money(billing.credit) : 'No payment remaining'],
@@ -1840,7 +1840,7 @@
       payment.date ? esc(shortDate(payment.date)) : 'Date not recorded', money(payment.amount), esc([payment.method, payment.reference].filter(Boolean).join(' / ') || 'Not recorded'),
       (payment.applied || []).map(item => money(item.amount) + ' — ' + (item.kind === 'Deposit' ? 'Deposit' : esc(shortDate(item.dueDate)) + ' to ' + esc(shortDate(item.through || item.dueDate)))).concat(payment.creditApplied ? [money(payment.creditApplied) + ' — Credit above contract'] : []).join('<br>') || 'No rent allocation'
     ]), 'No payments recorded');
-    return `<section class="simple-section embedded installment-breakdown"><h3>Account summary</h3>${account}<h3>Monthly payment breakdown</h3><p>Each rental period includes both dates shown. Rent is due on the first day of that period. Payments clear the oldest unpaid rent first, even when paid late. Any contract deposit is covered first. Future installments are not due yet. Maintenance is excluded.</p>${table(['Rental period / due date', 'Charge', 'Payment applied', 'Remaining', 'Status'], (billing.allocations || []).map(row => [(row.kind === 'Deposit' ? '<b>Deposit</b>' : '<b>' + esc(shortDate(row.dueDate)) + ' to ' + esc(shortDate(row.through || row.dueDate)) + '</b>') + '<br>Due ' + esc(shortDate(row.dueDate)), money(row.amount), money(row.paid), money(row.remaining), esc(row.status)]), 'No rent installments')}<h3>Payment history</h3><p>Applied amounts reflect the current contract dates and charges.</p>${history}</section>`;
+    return `<section class="simple-section embedded installment-breakdown"><h3>Account summary</h3>${billing.ongoing ? "<p>Ongoing monthly rental. No final contract total yet; this schedule includes the next renewal and extends each month until return.</p>" : ""}${account}<h3>Monthly payment breakdown</h3><p>Each rental period includes both dates shown. Rent is due on the first day of that period. Payments clear the oldest unpaid rent first, even when paid late. Any contract deposit is covered first. Future installments are not due yet. Maintenance is excluded.</p>${table(['Rental period / due date', 'Charge', 'Payment applied', 'Remaining', 'Status'], (billing.allocations || []).map(row => [(row.kind === 'Deposit' ? '<b>Deposit</b>' : '<b>' + esc(shortDate(row.dueDate)) + ' to ' + esc(shortDate(row.through || row.dueDate)) + '</b>') + '<br>Due ' + esc(shortDate(row.dueDate)), money(row.amount), money(row.paid), money(row.remaining), esc(row.status)]), 'No rent installments')}<h3>Payment history</h3><p>Applied amounts reflect the current contract dates and charges.</p>${history}</section>`;
   }
 
   function table(headers, rows, emptyText) {
@@ -2084,7 +2084,7 @@
         ${field("Model", "model", vehicle.model, "text", true)}${field("Plate", "plate", vehicle.plate, "text")}
         ${field("VIN", "vin", vehicle.vin, "text")}${field("Mileage", "mileage", String(vehicle.mileage || 0), "number", true)}
         <h3 class="wide">Rental terms</h3>
-        ${field("Start date", "startDate", rental.startDate, "date", true)}${field("Planned return date", "endDate", rental.endDate, "date", true)}
+        ${field("Start date", "startDate", rental.startDate, "date", true)}${field("Planned return date (optional)", "endDate", rental.endDate || "", "date", false)}<p class="form-note wide">Leave blank for an ongoing monthly rental. Rent renews on the start-date anniversary until the vehicle is returned.</p>
         ${field("Monthly rate", "monthlyRate", String(rentalMonthlyRate(rental)), "number", true, "0.01")}${field("Deposit", "deposit", String(rental.deposit || 0), "number", true, "0.01")}
         ${selectField("Contract status", "status", rental.status === "reserved" ? ["reserved", "active"] : [rental.status], rental.status)}
         ${field("Pickup location", "pickupLocation", rental.pickupLocation, "text")}
@@ -2110,7 +2110,7 @@
     if (!rental || !customer || !vehicle || rental.vehicleId !== data.previousVehicleId) throw new Error("The linked records changed. Reopen Edit contract and try again.");
     const changing = vehicle.id !== rental.vehicleId, previous = vehicleById(rental.vehicleId);
     if (![rental.status, ...(rental.status === "reserved" ? ["active"] : [])].includes(data.status)) throw new Error("Use Return vehicle to close a contract.");
-    if (!RentalMath.date(data.startDate) || !RentalMath.date(data.endDate) || data.endDate < data.startDate || (rental.returnDate && data.startDate > rental.returnDate) || (rental.vehicleChanges?.some(change => change.kind !== "reservation" && data.startDate > change.date))) throw new Error("Enter valid contract dates in chronological order.");
+    if (!RentalMath.date(data.startDate) || (data.endDate && (!RentalMath.date(data.endDate) || data.endDate < data.startDate)) || (rental.returnDate && data.startDate > rental.returnDate) || (rental.vehicleChanges?.some(change => change.kind !== "reservation" && data.startDate > change.date))) throw new Error("Enter valid contract dates in chronological order.");
     for (const key of ["monthlyRate", "deposit", "mileage"]) if (String(data[key] ?? "").trim() === "" || !Number.isFinite(Number(data[key])) || Number(data[key]) < 0) throw new Error("Rate, deposit and mileage must be valid non-negative numbers.");
     for (const key of ["name", "phone", "unit", "make", "model"]) if (!cleanText(data[key])) throw new Error("Enter customer name, phone, unit, make and model.");
     if (db.customers.some(c => c.id !== customer.id && ((phoneKey(data.phone) && phoneKey(c.phone) === phoneKey(data.phone)) || (textKey(data.license) && textKey(c.license) === textKey(data.license))))) throw new Error("Another customer already uses this phone or license.");
@@ -2118,8 +2118,9 @@
     if (changing && (rental.status === "closed" || vehicle.status !== "available" || (rental.status === "active" && data.startDate > todayKey()))) throw new Error("Choose an available vehicle for an open contract.");
     const activating = rental.status === "reserved" && data.status === "active";
     if ((changing || activating) && (vehicle.status === "inactive" || vehicle.status === "maintenance" || db.maintenance.some(m => m.vehicleId === vehicle.id && ["scheduled", "in_progress", "pending_payment"].includes(m.status)))) throw new Error("This vehicle is unavailable or in maintenance.");
+    if (rental.status === "closed" && !rental.returnDate && !data.endDate) throw new Error("A closed rental needs its planned or actual return date to preserve final charges.");
     const from = changing && rental.status === "active" ? todayKey() : data.startDate;
-    const until = data.endDate > from ? data.endDate : from;
+    const until = !data.endDate ? "" : data.endDate > from ? data.endDate : from;
     if (rental.status !== "closed" && db.rentals.some(r => r.id !== rental.id && r.vehicleId === vehicle.id && r.status !== "closed" && ((data.status === "active" && r.status === "active") || rangesOverlap(from, until, r.startDate, r.endDate)))) throw new Error("This vehicle has another rental during the selected dates.");
     const returnMileage = Number(data.returnMileage);
     if (changing && (String(data.returnMileage ?? "").trim() === "" || !Number.isFinite(returnMileage) || returnMileage < Number(previous?.mileage || 0))) throw new Error("Old vehicle return mileage cannot decrease.");
@@ -2144,7 +2145,7 @@
 
   function replacementVehicles(rental) {
     const date = todayKey();
-    const end = rental.endDate > date ? rental.endDate : date;
+    const end = !rental.endDate ? "" : rental.endDate > date ? rental.endDate : date;
     return db.vehicles.filter(vehicle => vehicle.id !== rental.vehicleId && vehicle.status === "available"
       && !db.maintenance.some(item => item.vehicleId === vehicle.id && ["scheduled", "in_progress", "pending_payment"].includes(item.status))
       && !db.rentals.some(other => other.id !== rental.id && other.vehicleId === vehicle.id && other.status !== "closed"
@@ -2292,7 +2293,7 @@
       <label class="wide"><span><input type="checkbox" name="additionalRental"> I intend to assign an additional vehicle if this customer already has an open rental.</span></label>
       ${lockedVehicle ? hiddenField("vehicleId", lockedVehicle.id) + lockedContext("Rental for this car", vehicleLine(lockedVehicle)) : rentalVehicleOptions(prefill.vehicleId || ui.vehicleId)}
       ${field("Start date", "startDate", todayKey(), "date", true)}
-      ${field("Return date", "endDate", addDays(7), "date", true)}
+      ${field("Planned return date (optional)", "endDate", "", "date", false)}<p class="form-note wide">Leave blank if the return date is unknown. Monthly rent continues until you record the vehicle return.</p>
       ${field("Monthly rate", "monthlyRate", "1800", "number", true, "0.01")}
       ${field("Deposit", "deposit", "300", "number", false, "0.01")}
       ${selectField("Status", "status", ["reserved", "active"], "active")}
@@ -2769,7 +2770,7 @@
   }
 
   async function saveRental(data) {
-    if (!RentalMath.date(data.startDate) || !RentalMath.date(data.endDate) || data.endDate < data.startDate) throw new Error("Enter valid rental dates; return date cannot precede start date.");
+    if (!RentalMath.date(data.startDate) || (data.endDate && (!RentalMath.date(data.endDate) || data.endDate < data.startDate))) throw new Error("Enter valid rental dates; return date cannot precede start date.");
     if (!["active", "reserved"].includes(data.status)) throw new Error("Choose active or reserved for a new rental.");
     if (!Number.isFinite(Number(data.monthlyRate)) || Number(data.monthlyRate) <= 0 || !Number.isFinite(Number(data.deposit || 0)) || Number(data.deposit || 0) < 0) throw new Error("Enter a positive monthly rate and a non-negative deposit.");
     const knownCustomer = customerById(data.customerId) || db.customers.find(customer => (phoneKey(data.driverPhone) && phoneKey(customer.phone) === phoneKey(data.driverPhone)) || (textKey(data.licenseNumber) && textKey(customer.license) === textKey(data.licenseNumber)));

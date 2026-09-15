@@ -110,3 +110,24 @@ test('receipt allocations reconcile deposit, prorated rent and credit', () => {
   assert.equal(receipt.applied[1].through, '2026-08-05');
   assert.equal(math.round(receipt.applied.reduce((sum, r) => sum+r.amount, 0) + receipt.creditApplied), 600);
 });
+
+
+test('ongoing rental renews monthly, carries advances and ends with prorated return', () => {
+  const rental = { id: 'ongoing', startDate: '2026-07-30', endDate: '', status: 'active', monthlyRate: 450, deposit: 0 };
+  const payments = [{ rentalId: 'ongoing', date: '2026-07-30', amount: 600 }];
+  const first = math.summary(rental, payments, '2026-09-14');
+  assert.equal(first.ongoing, true); assert.equal(first.due, 300); assert.equal(first.nextDueDate, '2026-09-30'); assert.equal(first.nextAmount, 450);
+  assert.equal(math.summary(rental, payments, '2027-01-30').due, 2550);
+  const advance = math.summary(rental, [{ rentalId: 'ongoing', date: '2026-07-30', amount: 4500 }], '2026-09-14');
+  assert.equal(advance.credit, 0); assert.equal(advance.due, 0); assert.equal(advance.nextDueDate, '2027-05-30');
+  rental.returnDate = '2026-09-10'; rental.status = 'closed';
+  const returned = math.summary(rental, payments, '2026-09-14');
+  assert.equal(returned.ongoing, false); assert.equal(returned.total, 624.19); assert.equal(returned.due, 24.19); assert.equal(returned.nextDueDate, null);
+});
+
+test('ongoing month-end anniversaries do not drift and future starts have no current due', () => {
+  const rental = { id:'ongoing', startDate:'2024-01-31', monthlyRate:600, status:'active' };
+  assert.deepEqual(math.schedule(rental, '2024-03-01').map(row=>row.dueDate), ['2024-01-31','2024-02-29','2024-03-31']);
+  assert.equal(math.summary(rental, [], '2024-01-01').due, 0);
+  rental.cancelledAt='2024-03-01'; assert.equal(math.summary(rental, [], '2024-03-01').due, 0);
+});

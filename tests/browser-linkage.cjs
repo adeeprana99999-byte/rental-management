@@ -43,9 +43,10 @@ async function test(engine, width) {
   await go('customers'); await page.locator('[data-action=select-customer][data-id=test-c]').click(); await checkDetails();
   await page.getByRole('button', { name: 'Assign vehicle', exact: true }).click();
   await page.locator('[name=vehicleId]').selectOption('test-v1');
-  for (const [name, value] of Object.entries({ startDate: '2026-09-01', endDate: '2026-10-01', monthlyRate: 600, deposit: 100, licenseExpiry: '2027-09-01', insuranceCompany: 'Test insurer', insurancePolicy: 'TESTPOLICY', insuranceExpiry: '2027-09-01' })) await field(name, value);
-  await save('rental'); assert.equal(saved.rentals.length, 1); assert.equal(saved.customers.length, 1); const rentalId = saved.rentals[0].id;
-  await page.getByRole('button', { name: 'Edit contract', exact: true }).click(); await field('name', 'Updated Linkage Customer'); await field('unit', 'UPDATED-ONE'); await save('contract');
+  for (const [name, value] of Object.entries({ startDate: '2026-09-01', endDate: process.env.TEST_ONGOING ? '' : '2026-10-01', monthlyRate: 600, deposit: 100, licenseExpiry: '2027-09-01', insuranceCompany: 'Test insurer', insurancePolicy: 'TESTPOLICY', insuranceExpiry: '2027-09-01' })) await field(name, value);
+  assert.equal(await page.locator('[name=endDate]').getAttribute('required'), null);
+  await save('rental'); if (process.env.TEST_ONGOING) { assert.equal(saved.rentals[0].endDate, ''); assert.match(await page.locator('.rental-profile').innerText(), /Ongoing/); } assert.equal(saved.rentals.length, 1); assert.equal(saved.customers.length, 1); const rentalId = saved.rentals[0].id;
+  await page.getByRole('button', { name: 'Edit contract', exact: true }).click(); await field('name', 'Updated Linkage Customer'); await field('unit', 'UPDATED-ONE'); if (process.env.TEST_ONGOING) assert.equal(await page.locator('[name=endDate]').inputValue(), ''); await save('contract');
   assert.equal(saved.customers[0].name, 'Updated Linkage Customer'); assert.equal(saved.vehicles[0].unit, 'UPDATED-ONE');
   await page.getByRole('button', { name: 'Actions', exact: true }).click(); await page.getByRole('button', { name: 'Record payment', exact: true }).click();
   await field('amount', 100); await field('date', '2026-09-14'); await save('payment');

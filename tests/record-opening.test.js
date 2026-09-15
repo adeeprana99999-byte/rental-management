@@ -465,3 +465,25 @@ test('finance totals distinguish paid and unsettled costs without counting maint
   assert.equal(page.financeTotals([]).net, 0);
   assert.equal(page.financeTotals([{ amount: -10, status: 'paid', type: 'expense' }]).net, -10);
 });
+
+
+test('new ongoing rental persists blank end date, blocks future overlap and returns normally', async () => {
+  const data = assignmentData(); data.rentals=[]; data.payments=[]; data.vehicles[0].status='available';
+  Object.assign(data.customers[0], { phone:'5551112222', address:'Test address', license:'TEST-LICENSE' });
+  const page=frontend(data);
+  await page.saveRental({ customerId:'customer', vehicleId:'old', driverName:'Existing customer', driverPhone:'5551112222', customerAddress:'Test address', licenseNumber:'TEST-LICENSE', startDate:'2026-09-01', endDate:'', monthlyRate:600, deposit:100, status:'active', pickupLocation:'', notes:'' });
+  const saved=page.savedData(); assert.equal(saved.rentals[0].endDate, ''); assert.equal(saved.vehicles[0].status, 'rented');
+  const reloaded=frontend(saved); reloaded.click({ action:'select-rental', id:saved.rentals[0].id }); assert.match(reloaded.app.innerHTML,/Ongoing/);
+  reloaded.saveRentalReturn({ rentalId:saved.rentals[0].id, returnDate:'2026-09-14', returnMileage:150, returnNotes:'' });
+  assert.equal(reloaded.savedData().rentals[0].status,'closed'); assert.equal(require('../rental-math').summary(reloaded.savedData().rentals[0], []).total,380);
+});
+
+
+test('open-ended reservations block later bookings and contract edits can remove an end date', async () => {
+ const data=assignmentData(); const page=frontend(data);
+ await page.saveContract(contractInput({endDate:''})); assert.equal(page.savedData().rentals[0].endDate,'');
+ const reserved=assignmentData(); reserved.rentals[0].status='reserved'; reserved.rentals[0].endDate=''; reserved.vehicles[0].status='available';
+ const second=frontend(reserved);
+ await assert.rejects(second.saveRental({customerId:'customer',additionalRental:'on', vehicleId:'old', startDate:'2027-01-01',endDate:'2027-01-31',monthlyRate:500,deposit:0,status:'reserved'}), /already has a rental/);
+ assert.equal(second.savedData().rentals.length,1);
+});

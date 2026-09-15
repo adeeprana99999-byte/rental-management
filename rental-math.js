@@ -24,10 +24,12 @@
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   }
-  function schedule(rental) {
+  function schedule(rental, asOf = today(), prepaid = 0) {
     if (rental.cancelledAt) return [];
-    const start = date(rental.startDate), end = date(rental.returnDate || rental.endDate);
-    if (!start || !end || end < start) return [];
+    const start = date(rental.startDate);
+    let end = date(rental.returnDate || rental.endDate);
+    const ongoing = !rental.returnDate && !rental.endDate && rental.status !== "closed";
+    if (!start || (!ongoing && (!end || end < start))) return [];
     const rate = Number(rental.monthlyRate || 0) || Number(rental.dailyRate || 0) * 30;
     // Anchor every installment to the original start day, so February never shifts later due dates.
     const anniversary = offset => {
@@ -35,6 +37,14 @@
       const lastDay = new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 0)).getUTCDate();
       return new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth(), Math.min(start.getUTCDate(), lastDay)));
     };
+    if (ongoing) {
+      const current = date(asOf) || start;
+      let offset = Math.max(0, (current.getUTCFullYear() - start.getUTCFullYear()) * 12 + current.getUTCMonth() - start.getUTCMonth());
+      if (offset > 0 && anniversary(offset) > current) offset--;
+      // Include the current period and the next unpaid renewal, even after advance payments.
+      const count = Math.max(offset + 2, rate > 0 ? Math.floor(Math.max(0, prepaid) / rate) + 1 : 2);
+      end = new Date(+anniversary(count) - 86400000);
+    }
     const rows = [];
     for (let index = 0, from = start; from <= end; from = anniversary(++index)) {
       const next = anniversary(index + 1);
@@ -44,9 +54,12 @@
     return rows;
   }
   function summary(rental, payments, asOf = today()) {
-    const installments = schedule(rental), deposit = rental.cancelledAt ? 0 : Number(rental.deposit || 0);
-    const rentCharged = round(installments.reduce((sum, row) => sum + row.amount, 0));
+    const deposit = rental.cancelledAt ? 0 : Number(rental.deposit || 0);
     const received = round(payments.filter(p => String(p.rentalId) === String(rental.id) && (!p.date || p.date <= asOf)).reduce((sum, p) => sum + Number(p.amount || 0), 0));
+    const ongoing = !rental.returnDate && !rental.endDate && rental.status !== 'closed' && !rental.cancelledAt;
+    const installments = schedule(rental, asOf, Math.max(0, received - deposit));
+    const scheduleThrough = installments.length ? installments[installments.length - 1].through : null;
+    const rentCharged = round(installments.reduce((sum, row) => sum + row.amount, 0));
     const rentDue = round(installments.filter(row => row.dueDate <= asOf).reduce((sum, row) => sum + row.amount, 0));
     const total = round(rentCharged + deposit);
     const billed = round(rentDue + (rental.startDate <= asOf ? deposit : 0));
@@ -78,7 +91,7 @@
       return { date: payment.date || '', amount, method: payment.method || '', reference: payment.reference || '', applied, creditApplied };
     });
     const overdue = round(allocations.filter(row => row.dueDate < asOf).reduce((sum, row) => sum + row.remaining, 0));
-    return { paymentHistory, overdue, allocations, rentCharged, deposit, total, received, due: round(Math.max(0, billed - received)), credit: round(Math.max(0, received - total)), rentDue, futureRent: round(rentCharged - rentDue), remainingBalance: round(Math.max(0, total - received)), nextDueDate, nextAmount };
+    return { ongoing, scheduleThrough, paymentHistory, overdue, allocations, rentCharged, deposit, total, received, due: round(Math.max(0, billed - received)), credit: round(Math.max(0, received - total)), rentDue, futureRent: round(rentCharged - rentDue), remainingBalance: round(Math.max(0, total - received)), nextDueDate, nextAmount };
   }
   const api = { round, date, days, rent, schedule, summary };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

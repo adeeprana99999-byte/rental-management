@@ -21,7 +21,7 @@ function messages(data, asOf) {
     const tail = `\n\nDue today: ${money(balance.due)}. Future rent is billed separately each month.\n${settings.companyName || 'Rental team'}${settings.supportPhone ? '\n' + settings.supportPhone : ''}`;
     const base = { rentalId: rental.id, customerId: customer.id, to: customer.email || '' };
     if (!rental.returnDate && rental.status !== 'closed') {
-      const target = math.schedule(rental).find(row => row.dueDate >= asOf && math.days(asOf, row.dueDate) <= 4 && math.summary(rental, payments, row.dueDate).due > 0);
+      const target = math.schedule(rental, asOf).find(row => row.dueDate >= asOf && math.days(asOf, row.dueDate) <= 4 && math.summary(rental, payments, row.dueDate).due > 0);
       if (target) {
         const amount = math.summary(rental, payments, target.dueDate).due;
         result.push({ ...base, key: `reminder:${rental.id}:${target.dueDate}`, kind: 'Rent reminder', dueDate: target.dueDate,
