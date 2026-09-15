@@ -56,6 +56,18 @@ async function test(engine, width) {
   await page.getByRole('heading', { name: 'Payment history', exact: true }).waitFor();
   assert.equal(await page.locator('.installment-breakdown table').count(), 3);
   assert.equal(await page.locator('.installment-breakdown table').nth(2).locator('tbody tr').count(), 1);
+  const paymentId = saved.payments[0].id;
+  await page.locator('[data-action=correct-payment][data-operation=edit]').first().click();
+  await field('amount',120); await field('reason','Correct amount'); await save('payment-correction');
+  assert.equal(saved.payments[0].amount,120); assert.equal(saved.payments[0].corrections[0].before.amount,100);
+  await page.locator('[data-action=correct-payment][data-operation=void]').first().click(); await field('reason','Duplicate entry'); await save('payment-correction');
+  assert.ok(saved.payments[0].voidedAt); assert.equal(math.summary(saved.rentals[0], saved.payments).received,0);
+  await page.locator('summary').filter({hasText:'Payment corrections / voided entries'}).click();
+  await page.getByRole('button',{name:'Restore payment',exact:true}).click(); await field('reason','Restore test receipt'); await save('payment-correction');
+  assert.equal(saved.payments[0].voidedAt,undefined);
+  await page.locator('[data-action=correct-payment][data-operation=edit]').first().click(); await field('amount',100); await field('reason','Restore original test amount'); await save('payment-correction');
+  assert.equal(saved.payments[0].id,paymentId); assert.equal(saved.payments[0].corrections.length,4);
+
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'contract billing overflow');
   await page.getByRole('button', { name: 'Change vehicle', exact: true }).click(); await page.locator('[name=vehicleId]').selectOption('test-v2'); await field('returnMileage', 150); await save('change-vehicle');
   assert.equal(saved.rentals[0].vehicleId, 'test-v2'); assert.equal(saved.payments[0].vehicleId, 'test-v1');
@@ -75,6 +87,7 @@ async function test(engine, width) {
   saved.rentals.push({ ...saved.rentals[0], id: 'second-contract', status: 'active', returnDate: undefined, vehicleId: 'test-v1' }); customerMode = true;
   await go('rentals'); await page.locator('[data-portal-rental]').selectOption(rentalId); assert.equal(await page.locator('[data-form=customer-checkin]').count(), 0);
   await page.getByRole('heading', { name: 'Payment history', exact: true }).waitFor(); await checkDetails();
+  assert.equal(await page.locator('[data-action=correct-payment]').count(),0);
   await page.getByText('No payment remaining', { exact: true }).waitFor();
   assert.equal(await page.getByText('Credit above contract', { exact: true }).count(), 0);
   assert.equal(await page.locator('.installment-breakdown table').nth(2).locator('tbody tr').count(), 2);

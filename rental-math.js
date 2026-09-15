@@ -55,7 +55,7 @@
   }
   function summary(rental, payments, asOf = today()) {
     const deposit = rental.cancelledAt ? 0 : Number(rental.deposit || 0);
-    const received = round(payments.filter(p => String(p.rentalId) === String(rental.id) && (!p.date || p.date <= asOf)).reduce((sum, p) => sum + Number(p.amount || 0), 0));
+    const received = round(payments.filter(p => !p.voidedAt && String(p.rentalId) === String(rental.id) && (!p.date || p.date <= asOf)).reduce((sum, p) => sum + Number(p.amount || 0), 0));
     const ongoing = !rental.returnDate && !rental.endDate && rental.status !== 'closed' && !rental.cancelledAt;
     const installments = schedule(rental, asOf, Math.max(0, received - deposit));
     const scheduleThrough = installments.length ? installments[installments.length - 1].through : null;
@@ -76,7 +76,7 @@
       if (!nextDueDate && row.dueDate > asOf && unpaid + depositUnpaid > 0) { nextDueDate = row.dueDate; nextAmount = round(unpaid + depositUnpaid); }
     }
     let runningReceived = 0;
-    const paymentHistory = payments.filter(p => String(p.rentalId) === String(rental.id) && (!p.date || p.date <= asOf)).slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))).map(payment => {
+    const paymentHistory = payments.filter(p => !p.voidedAt && String(p.rentalId) === String(rental.id) && (!p.date || p.date <= asOf)).slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))).map(payment => {
       const amount = Number(payment.amount || 0), applied = [];
       let chargeOffset = 0;
       for (const row of allocations) {
@@ -88,7 +88,7 @@
       }
       const creditApplied = round(Math.max(0, runningReceived + amount - total) - Math.max(0, runningReceived - total));
       runningReceived = round(runningReceived + amount);
-      return { date: payment.date || '', amount, method: payment.method || '', reference: payment.reference || '', applied, creditApplied };
+      return { id: payment.id, date: payment.date || '', amount, method: payment.method || '', reference: payment.reference || '', applied, creditApplied };
     });
     const overdue = round(allocations.filter(row => row.dueDate < asOf).reduce((sum, row) => sum + row.remaining, 0));
     return { ongoing, scheduleThrough, paymentHistory, overdue, allocations, rentCharged, deposit, total, received, due: round(Math.max(0, billed - received)), credit: round(Math.max(0, received - total)), rentDue, futureRent: round(rentCharged - rentDue), remainingBalance: round(Math.max(0, total - received)), nextDueDate, nextAmount };

@@ -64,3 +64,9 @@ test('ongoing rentals keep generating renewal reminders in later months', () => 
  fixture.rentals[0].returnDate='2027-04-20'; fixture.rentals[0].status='closed';
  assert.equal(emails.messages(fixture,'2027-05-11').length,0);
 });
+
+
+test('voided payments do not reduce reminder amounts or generate receipts', () => {
+ const fixture=data(); fixture.payments=[{id:'void',rentalId:'ren_1',date:'2026-09-11',amount:700,voidedAt:'2026-09-12',emailReceiptRequestedAt:'2026-09-11'}];
+ const rows=emails.messages(fixture,'2026-09-12'); assert.equal(rows.length,1); assert.equal(rows[0].kind,'Rent reminder'); assert.match(rows[0].text,/\$700\.00/);
+});

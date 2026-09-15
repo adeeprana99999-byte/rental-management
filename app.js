@@ -485,7 +485,7 @@
 
   function rentalPaid(rentalId) {
     return db.payments
-      .filter((payment) => payment.rentalId === rentalId)
+      .filter((payment) => !payment.voidedAt && payment.rentalId === rentalId)
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
   }
 
@@ -496,7 +496,7 @@
 
   function vehicleRevenue(vehicleId) {
     return db.payments
-      .filter((payment) => payment.vehicleId === vehicleId)
+      .filter((payment) => !payment.voidedAt && payment.vehicleId === vehicleId)
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
   }
 
@@ -518,7 +518,7 @@
 
   function customerRevenue(customerId) {
     return db.payments
-      .filter((payment) => payment.customerId === customerId)
+      .filter((payment) => !payment.voidedAt && payment.customerId === customerId)
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
   }
 
@@ -631,7 +631,7 @@
   }
 
   function financeEntries() {
-    const income = db.payments.map((payment) => {
+    const income = db.payments.filter(payment => !payment.voidedAt).map((payment) => {
       const rental = rentalById(payment.rentalId);
       return {
         id: payment.id,
@@ -1040,7 +1040,7 @@
     const activeRentals = db.rentals.filter((rental) => rental.status === "active");
     const available = db.vehicles.filter((vehicle) => vehicle.status === "available").length;
     const balances = db.rentals.reduce((sum, rental) => sum + rentalBalance(rental), 0);
-    const revenue = db.payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+    const revenue = db.payments.filter(payment => !payment.voidedAt).reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
     const expenses = db.expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
     const openAlerts = alertItems().length;
     const documentCount = documentGroupCount("all");
@@ -1546,7 +1546,7 @@
         </header>
         ${rental.returnDate ? '<p class="rental-state-note">Returned ' + esc(shortDate(rental.returnDate)) + '</p>' : ''}
         ${rental.cancelledAt ? '<p class="rental-state-note">Cancelled: ' + esc(rental.cancellationReason || 'Assigned by mistake') + '</p>' : ''}
-        ${installmentBreakdown(RentalMath.summary(rental, db.payments))}
+        ${installmentBreakdown(RentalMath.summary(rental, db.payments), rental.id)}
         <details class="more-details"><summary>View more details</summary>
           <section class="detail-grid">
             ${detail("Pickup", rental.pickupLocation)}
@@ -1826,7 +1826,46 @@
     return `<section class="timeline">${items.map((item) => `<article><span>${iconSvg(addIcon(item.type))}</span><div><b>${esc(item.message)}</b><small>${new Date(item.time).toLocaleString()}</small></div></article>`).join("")}</section>`;
   }
 
-  function installmentBreakdown(billing) {
+  function paymentActions(id) {
+    return '<div class="row-actions"><button class="soft-btn" data-action="correct-payment" data-operation="edit" data-id="' + esc(id) + '">Edit payment</button><button class="soft-btn" data-action="correct-payment" data-operation="void" data-id="' + esc(id) + '">Void payment</button></div>';
+  }
+
+  function paymentCorrections(rentalId) {
+    const rows = db.payments.filter(p => p.rentalId === rentalId && (p.voidedAt || p.corrections?.length));
+    if (!rows.length) return '';
+    return '<details class="more-details"><summary>Payment corrections / voided entries (' + rows.length + ')</summary>' + rows.map(p => '<section class="return-settlement"><h3>' + money(p.amount) + ' · ' + esc(shortDate(p.date)) + (p.voidedAt ? ' · Voided (excluded from balance)' : ' · Corrected') + '</h3>' + (p.corrections || []).map(c => '<p>' + esc(new Date(c.at).toLocaleString()) + ' · ' + esc(c.by) + ' · ' + esc(c.operation) + ': ' + esc(c.reason) + '<br>Before: ' + money(c.before.amount) + ' / ' + esc(c.before.date) + ' / ' + esc(c.before.method) + ' / ' + esc(c.before.reference || '') + '</p>').join('') + (p.voidedAt ? '<button class="soft-btn" data-action="correct-payment" data-operation="restore" data-id="' + esc(p.id) + '">Restore payment</button>' : '') + '</section>').join('') + '</details>';
+  }
+
+  function paymentCorrectionForm() {
+    if (auth?.role !== 'staff') return '';
+    const payment = db.payments.find(p => p.id === ui.prefill.paymentId);
+    if (!payment) return '<p>Payment is no longer available.</p>';
+    const operation = ui.prefill.operation;
+    const rental = rentalById(payment.rentalId);
+    return '<form class="record-form" data-form="payment-correction">' + hiddenField('paymentId', payment.id) + hiddenField('operation', operation) + '<h3>' + esc(customerById(payment.customerId)?.name || 'Customer') + ' · ' + esc(rental ? rentalPeriod(rental) : '') + '</h3><p>Selected payment: <b>' + money(payment.amount) + '</b> received ' + esc(shortDate(payment.date)) + ' · ' + esc(payment.method || 'Method not recorded') + '</p>' + (operation === 'edit' ? '<div class="form-grid">' + field('Date received', 'date', payment.date, 'date', true) + field('Amount', 'amount', payment.amount, 'number', true, '0.01') + field('Method', 'method', payment.method, 'text', false) + field('Reference', 'reference', payment.reference, 'text', false) + '</div>' : '<p>' + (operation === 'void' ? 'This entry will stop counting as income or rent received. The original payment remains in correction history.' : 'This payment will count toward income and rent received again.') + '</p>') + '<label>Reason for correction<textarea name="reason" required></textarea></label><p>Balances and monthly allocations recalculate automatically. Previously sent emails cannot be changed; this correction does not send another receipt.</p><footer><button type="button" class="soft-btn" data-action="close-modal">Cancel</button><button class="primary-add">' + (operation === 'void' ? 'Confirm void payment' : operation === 'restore' ? 'Restore payment' : 'Save correction') + '</button></footer></form>';
+  }
+
+  function savePaymentCorrection(data) {
+    if (auth?.role !== 'staff') throw new Error('Only staff can correct payments.');
+    const payment = db.payments.find(p => p.id === data.paymentId);
+    if (!payment || !rentalById(payment.rentalId)) throw new Error('Select an existing rental payment.');
+    const reason = String(data.reason || '').trim(), operation = data.operation;
+    if (!reason || !['edit', 'void', 'restore'].includes(operation)) throw new Error('Choose a correction and enter its reason.');
+    if ((payment.voidedAt && operation !== 'restore') || (!payment.voidedAt && operation === 'restore')) throw new Error('This payment has changed. Reopen it before correcting.');
+    if (operation !== 'void' && rentalById(payment.rentalId).cancelledAt) throw new Error('A cancelled contract cannot receive payments.');
+    if (operation === 'edit' && (!Number.isFinite(Number(data.amount)) || RentalMath.round(Number(data.amount)) <= 0 || !RentalMath.date(data.date) || data.date > todayKey())) throw new Error('Enter a positive amount and valid payment date no later than today.');
+    const at = new Date().toISOString();
+    payment.corrections = [...(payment.corrections || []), { operation, reason, at, by: auth.user?.name || 'Staff', before: { amount: payment.amount, date: payment.date, method: payment.method, reference: payment.reference, voidedAt: payment.voidedAt || null } }];
+    if (operation === 'edit') Object.assign(payment, { amount: RentalMath.round(Number(data.amount)), date: data.date, method: String(data.method || '').trim(), reference: String(data.reference || '').trim() });
+    if (operation === 'void') payment.voidedAt = at;
+    if (operation === 'restore') delete payment.voidedAt;
+    payment.emailReceiptRequestedAt = null;
+    ui.view = 'rentals'; ui.rentalMode = 'profile'; ui.rentalId = payment.rentalId;
+    addActivity('payment', 'Payment ' + operation + ': ' + reason, 'rental', payment.rentalId, { rentalId: payment.rentalId, customerId: payment.customerId, vehicleId: payment.vehicleId });
+    commit('Payment corrected. Balances recalculated.');
+  }
+
+  function installmentBreakdown(billing, rentalId) {
     if (!billing) return '';
     const account = table(['Account summary', 'Amount / date'], [
       [billing.ongoing ? 'Scheduled charges through ' + esc(shortDate(billing.scheduleThrough)) : 'Contract total', money(billing.total)], ['Total received', money(billing.received)],
@@ -1836,11 +1875,13 @@
       ...(billing.nextDueDate ? [['Total due by ' + esc(shortDate(billing.nextDueDate)) + ', if no further payment', money(RentalMath.round(billing.due + billing.nextAmount))]] : []),
       ...(billing.credit ? [['Credit above contract', money(billing.credit)]] : [])
     ]);
-    const history = table(['Date received', 'Amount', 'Method / reference', 'Applied toward'], (billing.paymentHistory || []).map(payment => [
+    const canCorrect = auth?.role === 'staff' && rentalId;
+    const history = table(['Date received', 'Amount', 'Method / reference', 'Applied toward', ...(canCorrect ? ['Actions'] : [])], (billing.paymentHistory || []).map(payment => [
       payment.date ? esc(shortDate(payment.date)) : 'Date not recorded', money(payment.amount), esc([payment.method, payment.reference].filter(Boolean).join(' / ') || 'Not recorded'),
-      (payment.applied || []).map(item => money(item.amount) + ' — ' + (item.kind === 'Deposit' ? 'Deposit' : esc(shortDate(item.dueDate)) + ' to ' + esc(shortDate(item.through || item.dueDate)))).concat(payment.creditApplied ? [money(payment.creditApplied) + ' — Credit above contract'] : []).join('<br>') || 'No rent allocation'
+      (payment.applied || []).map(item => money(item.amount) + ' — ' + (item.kind === 'Deposit' ? 'Deposit' : esc(shortDate(item.dueDate)) + ' to ' + esc(shortDate(item.through || item.dueDate)))).concat(payment.creditApplied ? [money(payment.creditApplied) + ' — Credit above contract'] : []).join('<br>') || 'No rent allocation',
+      ...(canCorrect ? [paymentActions(payment.id)] : [])
     ]), 'No payments recorded');
-    return `<section class="simple-section embedded installment-breakdown"><h3>Account summary</h3>${billing.ongoing ? "<p>Ongoing monthly rental. No final contract total yet; this schedule includes the next renewal and extends each month until return.</p>" : ""}${account}<h3>Monthly payment breakdown</h3><p>Each rental period includes both dates shown. Rent is due on the first day of that period. Payments clear the oldest unpaid rent first, even when paid late. Any contract deposit is covered first. Future installments are not due yet. Maintenance is excluded.</p>${table(['Rental period / due date', 'Charge', 'Payment applied', 'Remaining', 'Status'], (billing.allocations || []).map(row => [(row.kind === 'Deposit' ? '<b>Deposit</b>' : '<b>' + esc(shortDate(row.dueDate)) + ' to ' + esc(shortDate(row.through || row.dueDate)) + '</b>') + '<br>Due ' + esc(shortDate(row.dueDate)), money(row.amount), money(row.paid), money(row.remaining), esc(row.status)]), 'No rent installments')}<h3>Payment history</h3><p>Applied amounts reflect the current contract dates and charges.</p>${history}</section>`;
+    return `<section class="simple-section embedded installment-breakdown"><h3>Account summary</h3>${billing.ongoing ? "<p>Ongoing monthly rental. No final contract total yet; this schedule includes the next renewal and extends each month until return.</p>" : ""}${account}<h3>Monthly payment breakdown</h3><p>Each rental period includes both dates shown. Rent is due on the first day of that period. Payments clear the oldest unpaid rent first, even when paid late. Any contract deposit is covered first. Future installments are not due yet. Maintenance is excluded.</p>${table(['Rental period / due date', 'Charge', 'Payment applied', 'Remaining', 'Status'], (billing.allocations || []).map(row => [(row.kind === 'Deposit' ? '<b>Deposit</b>' : '<b>' + esc(shortDate(row.dueDate)) + ' to ' + esc(shortDate(row.through || row.dueDate)) + '</b>') + '<br>Due ' + esc(shortDate(row.dueDate)), money(row.amount), money(row.paid), money(row.remaining), esc(row.status)]), 'No rent installments')}<h3>Payment history</h3><p>Applied amounts reflect the current contract dates and charges.</p>${history}${canCorrect ? paymentCorrections(rentalId) : ""}</section>`;
   }
 
   function table(headers, rows, emptyText) {
@@ -1904,13 +1945,14 @@
     const isCustomerEdit = ui.modal === "customer" && Boolean(ui.prefill.editCustomerId);
     return `<div class="modal-backdrop" role="dialog" aria-modal="true">
       <section class="modal ${isPassword ? "password-modal" : ""}">
-        <header><div><small>${isPassword ? "Account" : isVehicleEdit || isCustomerEdit || ui.modal === "contract" ? "Edit record" : "Add record"}</small><h2>${esc(isPassword ? "Change password" : isVehicleEdit ? "Edit vehicle" : isCustomerEdit ? "Edit customer" : recordTypeLabel(ui.modal))}</h2></div><button data-action="close-modal" aria-label="Close">X</button></header>
+        <header><div><small>${isPassword ? "Account" : isVehicleEdit || isCustomerEdit || (ui.modal === "contract" || ui.modal === "payment-correction") ? "Edit record" : "Add record"}</small><h2>${esc(isPassword ? "Change password" : isVehicleEdit ? "Edit vehicle" : isCustomerEdit ? "Edit customer" : (ui.modal === "payment-correction" ? "Correct payment" : recordTypeLabel(ui.modal)))}</h2></div><button data-action="close-modal" aria-label="Close">X</button></header>
         ${renderForm(ui.modal)}
       </section>
     </div>`;
   }
 
   function renderForm(type) {
+    if (type === "payment-correction") return paymentCorrectionForm();
     if (type === "manage-record") return manageRecordForm();
     if (type === "cancel-assignment") return cancelAssignmentForm();
     if (type === "emails") return customerEmailsView();
@@ -2428,6 +2470,7 @@
       commit("Settings updated.");
       return;
     }
+    if (type === "payment-correction") return savePaymentCorrection(data);
     if (type === "return") return saveRentalReturn(data);
     if (type === "contract") return saveContract(data);
     if (type === "cancel-assignment") return saveAssignmentCancellation(data);
@@ -3047,6 +3090,10 @@
     if (action === "cancel-assignment") {
       if (auth?.role !== "staff" || !rentalById(button.dataset.id) || rentalById(button.dataset.id).cancelledAt) return;
       ui.modal = "cancel-assignment"; ui.prefill = { rentalId: button.dataset.id }; ui.actionMenu = ""; render(); return;
+    }
+    if (action === "correct-payment") {
+      if (auth?.role !== 'staff') return;
+      ui.modal = 'payment-correction'; ui.prefill = { paymentId: button.dataset.id, operation: button.dataset.operation }; ui.actionMenu = ''; render(); return;
     }
     if (action === "customer-emails") {
       if (auth?.role !== "staff") return;

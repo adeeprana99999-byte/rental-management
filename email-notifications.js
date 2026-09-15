@@ -29,7 +29,7 @@ function messages(data, asOf) {
           text: `Hello ${customer.name || 'there'},\n\nYour next rental payment is due on ${target.dueDate}. Amount due by that date: ${money(amount)} (including any unpaid earlier installments and deposit). Payments recorded so far are included.` + tail });
       }
     }
-    for (const payment of (data.payments || []).filter(p => p.rentalId === rental.id && p.emailReceiptRequestedAt && p.date <= asOf && Number(p.amount) > 0)) {
+    for (const payment of (data.payments || []).filter(p => !p.voidedAt && p.rentalId === rental.id && p.emailReceiptRequestedAt && p.date <= asOf && Number(p.amount) > 0)) {
       result.push({ ...base, key: `receipt:${payment.id}`, kind: 'Payment receipt', paymentId: payment.id, requestedAt: payment.emailReceiptRequestedAt,
         subject: `${code}: payment received`, text: `Hello ${customer.name || 'there'},\n\nWe recorded your payment of ${money(payment.amount)} on ${payment.date}.${payment.method ? '\nPayment method: ' + payment.method : ''}${payment.reference ? '\nReference: ' + payment.reference : ''}\nContract: ${code}` + tail });
     }

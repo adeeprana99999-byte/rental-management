@@ -63,9 +63,13 @@ function frontend(data) {
     setTimeout: () => 0, clearTimeout() {}, alert: message => { throw new Error(message); }
   });
   const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { financeTotals, financeEntries, saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract, saveAssignmentCancellation, saveRental, saveRecordManagement, savePayment, saveMaintenance, saveInspection, saveExpense }; })();'), context);
+  vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.testApp = { savePaymentCorrection, rentalPaid, vehicleRevenue, customerRevenue, financeTotals, financeEntries, saveVehicle, saveCustomer, saveVehicleChange, saveRentalReturn, saveContract, saveAssignmentCancellation, saveRental, saveRecordManagement, savePayment, saveMaintenance, saveInspection, saveExpense }; })();'), context);
   return {
     app,
+    savePaymentCorrection: context.testApp.savePaymentCorrection,
+    rentalPaid: context.testApp.rentalPaid,
+    vehicleRevenue: context.testApp.vehicleRevenue,
+    customerRevenue: context.testApp.customerRevenue,
     financeTotals: context.testApp.financeTotals,
     financeEntries: context.testApp.financeEntries,
     saveVehicle: context.testApp.saveVehicle,
@@ -486,4 +490,24 @@ test('open-ended reservations block later bookings and contract edits can remove
  const second=frontend(reserved);
  await assert.rejects(second.saveRental({customerId:'customer',additionalRental:'on', vehicleId:'old', startDate:'2027-01-01',endDate:'2027-01-31',monthlyRate:500,deposit:0,status:'reserved'}), /already has a rental/);
  assert.equal(second.savedData().rentals.length,1);
+});
+
+
+test('payment edit, void and restore preserve identity, history and all financial links', () => {
+ const page=frontend(assignmentData());
+ page.savePaymentCorrection({paymentId:'payment',operation:'edit',amount:185,date:'2026-05-24',method:'Zelle',reference:'Corrected',reason:'Wrong amount'});
+ let saved=page.savedData(); const payment=saved.payments[0];
+ assert.equal(payment.amount,185); assert.equal(payment.rentalId,'rental'); assert.equal(payment.vehicleId,'old'); assert.equal(payment.corrections[0].before.amount,400); assert.equal(payment.emailReceiptRequestedAt,null);
+ assert.equal(page.rentalPaid('rental'),185); assert.equal(page.vehicleRevenue('old'),185); assert.equal(page.customerRevenue('customer'),185);
+ const due=require('../rental-math').summary(saved.rentals[0],saved.payments).due;
+ page.savePaymentCorrection({paymentId:'payment',operation:'void',reason:'Duplicate payment'});
+ saved=page.savedData(); assert.equal(saved.payments.length,1); assert.ok(saved.payments[0].voidedAt); assert.equal(page.financeEntries().length,0);
+ assert.equal(page.rentalPaid('rental'),0); assert.equal(page.customerRevenue('customer'),0); assert.equal(page.vehicleRevenue('old'),0);
+ assert.equal(require('../rental-math').summary(saved.rentals[0],saved.payments).due,due+185);
+ const reload=frontend(saved); reload.savePaymentCorrection({paymentId:'payment',operation:'restore',reason:'Voided the wrong entry'});
+ assert.equal(reload.rentalPaid('rental'),185); assert.equal(reload.savedData().payments[0].corrections.length,3);
+ const before=reload.savedData();
+ for(const amount of [-1,0,0.001,'bad']) assert.throws(()=>reload.savePaymentCorrection({paymentId:'payment',operation:'edit',date:'2026-05-24',amount,reason:'Invalid'}),/positive amount/);
+ assert.throws(()=>reload.savePaymentCorrection({paymentId:'payment',operation:'void',reason:''}),/reason/);
+ assert.deepEqual(reload.savedData(),before);
 });
