@@ -79,3 +79,34 @@ test('allocation reconciles deposits, prepayments, return proration and excess c
   rental.cancelledAt = '2026-09-14';
   assert.deepEqual(math.summary(rental, [], '2026-09-14').allocations, []);
 });
+
+
+test('payment history sorts receipts and scopes safe fields while allocating oldest charges first', () => {
+  const rental = { id: 'history', startDate: '2026-07-30', endDate: '2026-12-31', monthlyRate: 450, deposit: 0 };
+  const payments = [
+    { rentalId: 'history', date: '2026-08-10', amount: 400, method: 'Transfer', reference: 'REF2', notes: 'Private staff notes' },
+    { rentalId: 'other', date: '2026-08-01', amount: 999 },
+    { rentalId: 'history', date: '2026-07-30', amount: 200, method: 'Cash' },
+    { rentalId: 'history', date: '2026-09-20', amount: 300 }
+  ];
+  const value = math.summary(rental, payments, '2026-09-14');
+  assert.equal(value.overdue, 300); assert.equal(value.due, 300);
+  assert.equal(value.nextDueDate, '2026-09-30'); assert.equal(value.nextAmount, 450);
+  assert.equal(value.paymentHistory.length, 2);
+  assert.equal(value.paymentHistory[0].date, '2026-07-30');
+  assert.deepEqual(value.paymentHistory[1].applied.map(r => [r.dueDate, r.through, r.amount]), [['2026-07-30', '2026-08-29', 250], ['2026-08-30', '2026-09-29', 150]]);
+  assert.equal(value.paymentHistory[1].reference, 'REF2');
+  assert.equal(value.paymentHistory[1].notes, undefined);
+  assert.equal(math.summary(rental, payments, '2026-08-30').overdue, 0);
+  assert.equal(math.summary(rental, payments, '2026-08-30').due, 300);
+});
+
+test('receipt allocations reconcile deposit, prorated rent and credit', () => {
+  const rental = { id: 'history', startDate: '2026-07-30', endDate: '2026-12-31', returnDate: '2026-08-05', monthlyRate: 450, deposit: 100 };
+  const value = math.summary(rental, [{ rentalId: 'history', amount: 600 }], '2026-09-14');
+  const receipt = value.paymentHistory[0];
+  assert.equal(receipt.applied[0].kind, 'Deposit');
+  assert.equal(receipt.applied[0].amount, 100);
+  assert.equal(receipt.applied[1].through, '2026-08-05');
+  assert.equal(math.round(receipt.applied.reduce((sum, r) => sum+r.amount, 0) + receipt.creditApplied), 600);
+});

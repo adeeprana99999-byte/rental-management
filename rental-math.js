@@ -62,7 +62,23 @@
       const depositUnpaid = row.dueDate === rental.startDate && row.dueDate > asOf ? Math.max(0, deposit - received) : 0;
       if (!nextDueDate && row.dueDate > asOf && unpaid + depositUnpaid > 0) { nextDueDate = row.dueDate; nextAmount = round(unpaid + depositUnpaid); }
     }
-    return { allocations, rentCharged, deposit, total, received, due: round(Math.max(0, billed - received)), credit: round(Math.max(0, received - total)), rentDue, futureRent: round(rentCharged - rentDue), remainingBalance: round(Math.max(0, total - received)), nextDueDate, nextAmount };
+    let runningReceived = 0;
+    const paymentHistory = payments.filter(p => String(p.rentalId) === String(rental.id) && (!p.date || p.date <= asOf)).slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))).map(payment => {
+      const amount = Number(payment.amount || 0), applied = [];
+      let chargeOffset = 0;
+      for (const row of allocations) {
+        const before = Math.min(row.amount, Math.max(0, runningReceived - chargeOffset));
+        const after = Math.min(row.amount, Math.max(0, runningReceived + amount - chargeOffset));
+        const value = round(after - before);
+        if (value) applied.push({ kind: row.kind, dueDate: row.dueDate, through: row.through, amount: value });
+        chargeOffset = round(chargeOffset + row.amount);
+      }
+      const creditApplied = round(Math.max(0, runningReceived + amount - total) - Math.max(0, runningReceived - total));
+      runningReceived = round(runningReceived + amount);
+      return { date: payment.date || '', amount, method: payment.method || '', reference: payment.reference || '', applied, creditApplied };
+    });
+    const overdue = round(allocations.filter(row => row.dueDate < asOf).reduce((sum, row) => sum + row.remaining, 0));
+    return { paymentHistory, overdue, allocations, rentCharged, deposit, total, received, due: round(Math.max(0, billed - received)), credit: round(Math.max(0, received - total)), rentDue, futureRent: round(rentCharged - rentDue), remainingBalance: round(Math.max(0, total - received)), nextDueDate, nextAmount };
   }
   const api = { round, date, days, rent, schedule, summary };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

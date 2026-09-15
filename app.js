@@ -1817,7 +1817,17 @@
 
   function installmentBreakdown(billing) {
     if (!billing?.allocations?.length) return '';
-    return `<section class="simple-section embedded installment-breakdown"><h3>Monthly payment breakdown</h3><p>Payments clear the oldest unpaid rent first, even when paid late. Any contract deposit is covered first. Future installments are not due yet.</p>${table(['Due date', 'Charge', 'Applied', 'Remaining', 'Status'], billing.allocations.map(row => [esc(shortDate(row.dueDate)) + (row.kind === 'Deposit' ? '<br>Deposit' : ''), money(row.amount), money(row.paid), money(row.remaining), esc(row.status)]))}<p><b>Due today: ${money(billing.due)}</b> · Received: ${money(billing.received)}${billing.credit ? ' · Credit above contract: ' + money(billing.credit) : ''}</p></section>`;
+    const account = table(['Account summary', 'Amount / date'], [
+      ['Total received', money(billing.received)], ['Overdue now', money(billing.overdue || 0)], ['Due today (includes overdue)', money(billing.due)],
+      ['Next installment', billing.nextDueDate ? money(billing.nextAmount) + ' due ' + esc(shortDate(billing.nextDueDate)) : 'No further scheduled payment'],
+      ...(billing.nextDueDate ? [['Total due by ' + esc(shortDate(billing.nextDueDate)) + ', if no further payment', money(RentalMath.round(billing.due + billing.nextAmount))]] : []),
+      ...(billing.credit ? [['Credit above contract', money(billing.credit)]] : [])
+    ]);
+    const history = table(['Date received', 'Amount', 'Method / reference', 'Applied toward'], (billing.paymentHistory || []).map(payment => [
+      payment.date ? esc(shortDate(payment.date)) : 'Date not recorded', money(payment.amount), esc([payment.method, payment.reference].filter(Boolean).join(' / ') || 'Not recorded'),
+      (payment.applied || []).map(item => money(item.amount) + ' — ' + (item.kind === 'Deposit' ? 'Deposit' : esc(shortDate(item.dueDate)) + ' to ' + esc(shortDate(item.through || item.dueDate)))).concat(payment.creditApplied ? [money(payment.creditApplied) + ' — Credit above contract'] : []).join('<br>') || 'No rent allocation'
+    ]), 'No payments recorded');
+    return `<section class="simple-section embedded installment-breakdown"><h3>Account summary</h3>${account}<h3>Monthly payment breakdown</h3><p>Each rental period includes both dates shown. Rent is due on the first day of that period. Payments clear the oldest unpaid rent first, even when paid late. Any contract deposit is covered first. Future installments are not due yet.</p>${table(['Rental period / due date', 'Charge', 'Payment applied', 'Remaining', 'Status'], billing.allocations.map(row => [(row.kind === 'Deposit' ? '<b>Deposit</b>' : '<b>' + esc(shortDate(row.dueDate)) + ' to ' + esc(shortDate(row.through || row.dueDate)) + '</b>') + '<br>Due ' + esc(shortDate(row.dueDate)), money(row.amount), money(row.paid), money(row.remaining), esc(row.status)]))}<p><b>Due today: ${money(billing.due)}</b> · Received: ${money(billing.received)}${billing.credit ? ' · Credit above contract: ' + money(billing.credit) : ''}</p><h3>Payment history</h3><p>Applied amounts reflect the current contract dates and charges.</p>${history}</section>`;
   }
 
   function table(headers, rows, emptyText) {

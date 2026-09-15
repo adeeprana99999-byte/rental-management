@@ -40,7 +40,13 @@ async function test(engine, width) {
   await page.getByRole('button', { name: 'Actions', exact: true }).click(); await page.getByRole('button', { name: 'Record payment', exact: true }).click();
   await field('amount', 100); await field('date', '2026-09-14'); await save('payment');
   assert.equal(saved.payments[0].rentalId, rentalId); assert(saved.payments[0].emailReceiptRequestedAt);
-  await openRental(); await page.getByRole('button', { name: 'Change vehicle', exact: true }).click(); await page.locator('[name=vehicleId]').selectOption('test-v2'); await field('returnMileage', 150); await save('change-vehicle');
+  await openRental();
+  await page.getByRole('heading', { name: 'Account summary', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Payment history', exact: true }).waitFor();
+  assert.equal(await page.locator('.installment-breakdown table').count(), 3);
+  assert.equal(await page.locator('.installment-breakdown table').nth(2).locator('tbody tr').count(), 1);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'contract billing overflow');
+  await page.getByRole('button', { name: 'Change vehicle', exact: true }).click(); await page.locator('[name=vehicleId]').selectOption('test-v2'); await field('returnMileage', 150); await save('change-vehicle');
   assert.equal(saved.rentals[0].vehicleId, 'test-v2'); assert.equal(saved.payments[0].vehicleId, 'test-v1');
   await page.getByRole('button', { name: 'Actions', exact: true }).click(); await page.locator('.context-menu').getByRole('button', { name: 'Add file', exact: true }).click();
   await page.locator('[name=type]').selectOption('Driver license');
@@ -57,6 +63,9 @@ async function test(engine, width) {
   await go('documents'); await page.locator('footer [data-action=open-document]').first().click(); await page.waitForFunction(() => document.querySelector('.document-preview-image')?.naturalWidth > 0, null, { timeout: 5000 });
   saved.rentals.push({ ...saved.rentals[0], id: 'second-contract', status: 'active', returnDate: undefined, vehicleId: 'test-v1' }); customerMode = true;
   await go('rentals'); await page.locator('[data-portal-rental]').selectOption(rentalId); assert.equal(await page.locator('[data-form=customer-checkin]').count(), 0);
+  await page.getByRole('heading', { name: 'Payment history', exact: true }).waitFor();
+  assert.equal(await page.locator('.installment-breakdown table').nth(2).locator('tbody tr').count(), 2);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'customer billing overflow');
   await page.locator('[data-portal-rental]').selectOption('second-contract'); await page.locator('[data-form=customer-checkin]').waitFor();
   assert.deepEqual(errors, []); results.push({ engine, width, passed: true }); console.log(`${engine} ${width}: full linkage flow passed`); await browser.close();
 }
