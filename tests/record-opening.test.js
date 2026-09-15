@@ -372,7 +372,10 @@ test('mapped imported relationships support customer and rental navigation', () 
   assert.match(page.app.innerHTML, /class="profile-header"/);
   assert.match(page.app.innerHTML, /Imported Customer/);
   page.click({ action: 'select-rental', id: '23' });
-  assert.match(page.app.innerHTML, /REN-23/);
+  assert.doesNotMatch(page.app.innerHTML, /REN-23/);
+  assert.match(page.app.innerHTML, /Imported Customer/);
+  assert.match(page.app.innerHTML, /Sep 1, 2026 to Oct 1, 2026/);
+  assert.match(page.app.innerHTML, /data-action="edit-contract" data-id="23"/);
   assert.match(page.app.innerHTML, /IMPORT-01/);
 });
 

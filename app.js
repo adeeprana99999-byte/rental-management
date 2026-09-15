@@ -459,6 +459,10 @@
     return "REN-" + String(rental.id || "").replace(/^ren_/, "").toUpperCase();
   }
 
+  function rentalPeriod(rental) {
+    return shortDate(rental.startDate) + ' to ' + shortDate(rental.returnDate || rental.endDate);
+  }
+
   function activeRentalForVehicle(vehicleId) {
     return db.rentals.find((rental) => rental.vehicleId === vehicleId && rental.status === "active") || null;
   }
@@ -671,7 +675,7 @@
     if (type === "customer") return customerById(id)?.name || "Customer";
     if (type === "rental") {
       const rental = rentalById(id);
-      return rental ? rentalCode(rental) : "Rental";
+      return rental ? rentalPeriod(rental) : "Rental";
     }
     return "Record";
   }
@@ -772,7 +776,7 @@
     }
     if (ui.view === "rentals" && ui.rentalMode === "profile") {
       const rental = rentalById(ui.rentalId);
-      if (rental) return rentalCode(rental);
+      if (rental) return customerById(rental.customerId)?.name || "Rental";
     }
     return fallback;
   }
@@ -905,7 +909,7 @@
         </div>
       </header>
       <main class="customer-content">
-        ${rentals.length > 1 ? `<label>Choose your contract<select data-portal-rental>${rentals.map(item => `<option value="${esc(item.id)}" ${item.id === rental?.id ? "selected" : ""}>${esc(rentalCode(item))} · ${esc(vehicleById(item.vehicleId)?.unit || "Vehicle")} · ${esc(item.cancelledAt ? "cancelled" : item.status)}</option>`).join("")}</select></label>` : ""}
+        ${rentals.length > 1 ? `<label>Choose your contract<select data-portal-rental>${rentals.map(item => `<option value="${esc(item.id)}" ${item.id === rental?.id ? "selected" : ""}>${esc(rentalPeriod(item))} · ${esc(vehicleById(item.vehicleId)?.unit || "Vehicle")} · ${esc(item.cancelledAt ? "cancelled" : item.status)}</option>`).join("")}</select></label>` : ""}
         ${rental && vehicle ? `
           <section class="customer-hero-card">
             <div>
@@ -1356,7 +1360,7 @@
         </div>
       </header>
       <section class="simple-section"><h3>Assigned vehicles (${openRentals.length})</h3><p>${openRentals.length > 1 ? "This customer has multiple open contracts. Choose the exact vehicle below to edit, return, or remove an accidental assignment." : "Manage each assignment from its own contract."}</p>
-        ${openRentals.map(rental => `<section class="return-settlement"><h3>${esc(vehicleById(rental.vehicleId)?.unit || "Missing vehicle")} · ${esc(rentalCode(rental))}</h3><p>${esc(rental.status)} · ${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)} · Due today: ${money(rentalBalance(rental))}</p><div class="row-actions"><button class="soft-btn" data-action="select-rental" data-id="${esc(rental.id)}">Open contract</button><button class="soft-btn" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button><button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button></div></section>`).join("") || '<p>No open vehicle assignments.</p>'}
+        ${openRentals.map(rental => `<section class="return-settlement"><h3>${esc(vehicleById(rental.vehicleId)?.unit || "Missing vehicle")}</h3><p>${esc(rental.status)} · ${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)} · Due today: ${money(rentalBalance(rental))}</p><div class="row-actions"><button class="soft-btn" data-action="select-rental" data-id="${esc(rental.id)}">Open contract</button><button class="soft-btn" data-action="close-rental" data-id="${esc(rental.id)}">Return vehicle</button><button class="soft-btn" data-action="cancel-assignment" data-id="${esc(rental.id)}">Remove mistaken assignment</button></div></section>`).join("") || '<p>No open vehicle assignments.</p>'}
       </section>
       <nav class="tabs">${customerTabs.map((tab) => `<button class="${ui.customerTab === tab ? "active" : ""}" data-action="customer-tab" data-tab="${tab}">${tabLabel(tab)}</button>`).join("")}</nav>
       ${renderCustomerTab(customer, rentals)}
@@ -1408,7 +1412,7 @@
     if (ui.rentalMode === "profile" && selected) {
       return `
         <section class="entity-page">
-          ${entityCrumb("Rentals", rentalCode(selected), entityName("vehicle", selected.vehicleId), "rentals")}
+          ${entityCrumb("Rentals", customerById(selected.customerId)?.name || "Customer", entityName("vehicle", selected.vehicleId), "rentals")}
           ${renderRentalProfile(selected)}
         </section>
       `;
@@ -1448,7 +1452,7 @@
     const balance = rentalBalance(rental);
     return `<article class="simple-rental-card">
       <div class="simple-rental-main">
-        <div><span>${esc(rentalCode(rental))}</span>${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}</div>
+        <div>${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}</div>
         <h3><button class="rental-name-link" data-action="select-rental" data-id="${esc(rental.id)}">${esc(customer?.name || "Customer")}</button></h3>
         <p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")}</p>
         <small>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</small>
@@ -1471,7 +1475,7 @@
     const customer = customerById(rental.customerId);
     const balance = rentalBalance(rental);
     return `<article class="rental-card ${ui.rentalId === rental.id ? "active" : ""}">
-      <div><small>${esc(rentalCode(rental))}</small><h4>${esc(customer?.name || "Customer")}</h4><p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")}</p></div>
+      <div><h4>${esc(customer?.name || "Customer")}</h4><p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")}</p></div>
       <div class="rental-card-lines">
         <span>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</span>
         <b class="${balance ? "text-danger" : "text-success"}">${money(balance)} balance</b>
@@ -1496,7 +1500,7 @@
     const balance = rentalBalance(rental);
     return `<article class="compact-rental">
       <div class="compact-main">
-        <span>${esc(rentalCode(rental))}</span>
+        <span>Rental</span>
         <button class="rental-name-link compact" data-action="select-rental" data-id="${esc(rental.id)}">${esc(customer?.name || "Customer")}</button>
         <small>${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</small>
       </div>
@@ -1520,7 +1524,7 @@
       <section class="rental-profile panel">
         <header class="profile-header compact">
           <div class="vehicle-title">
-            <span class="plate">${esc(rentalCode(rental))}</span>
+            <span class="plate icon-plate">${iconSvg("rentals")}</span>
             <div><h2>${esc(customer?.name || "Customer")}</h2><p>${esc(vehicle ? vehicle.unit + " / " + vehicle.make + " " + vehicle.model : "Vehicle")} / ${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}</p></div>
           </div>
           <div class="profile-actions">
@@ -1668,7 +1672,7 @@
       const customer = customerById(rental.customerId);
       const balance = rentalBalance(rental);
       return [
-        `<b>${esc(rentalCode(rental))}</b><small>${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}</small>`,
+        `<small>${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}</small>`,
         `<button class="table-link" data-action="select-vehicle" data-id="${esc(rental.vehicleId)}"><b>${esc(vehicle?.unit || "Vehicle")}</b><small>${esc(vehicle ? vehicle.make + " " + vehicle.model : "")}</small></button>`,
         `<button class="table-link" data-action="select-customer" data-id="${esc(rental.customerId)}"><b>${esc(customer?.name || "Customer")}</b><small>${esc(customer?.phone || "")}</small></button>`,
         `<b>${shortDate(rental.startDate)}</b><small>Return ${shortDate(rental.returnDate || rental.endDate)}</small>`,
@@ -1954,7 +1958,7 @@
     return selectField("Rental", "rentalId", [{ value: "", label: "No rental selected" }].concat(rentals.map((rental) => {
       const customer = customerById(rental.customerId);
       const vehicle = vehicleById(rental.vehicleId);
-      return { value: rental.id, label: `${rentalCode(rental)} - ${customer?.name || "Customer"} - ${vehicle?.unit || "Vehicle"}` };
+      return { value: rental.id, label: `${rentalPeriod(rental)} - ${customer?.name || "Customer"} - ${vehicle?.unit || "Vehicle"}` };
     })), selected);
   }
 
@@ -2018,7 +2022,7 @@
     const rental = rentalById(ui.prefill.rentalId);
     if (!rental) return "";
     const payments = db.payments.filter(payment => payment.rentalId === rental.id);
-    return `<form class="record-form" data-form="cancel-assignment">${hiddenField("rentalId", rental.id)}<h3>${esc(customerById(rental.customerId)?.name)} · ${esc(vehicleById(rental.vehicleId)?.unit)} · ${esc(rentalCode(rental))}</h3><p>Use this only if the car was assigned by mistake and was never rented under this contract. This closes the mistaken assignment, removes its rental charges and releases its vehicle. The original record, files and cancellation reason remain in history.</p>${payments.length ? '<p role="alert">This contract has payment records. Cancellation is blocked to preserve payment history. Check those payments first; use Return vehicle if this was a real rental.</p>' : ''}<label>Reason<textarea name="reason" required></textarea></label><footer><button type="button" class="soft-btn" data-action="close-modal">Keep assignment</button><button class="primary-add" ${payments.length ? 'disabled' : ''}>Confirm mistaken assignment</button></footer></form>`;
+    return `<form class="record-form" data-form="cancel-assignment">${hiddenField("rentalId", rental.id)}<h3>${esc(customerById(rental.customerId)?.name)} · ${esc(vehicleById(rental.vehicleId)?.unit)} · ${esc(rentalPeriod(rental))}</h3><p>Use this only if the car was assigned by mistake and was never rented under this contract. This closes the mistaken assignment, removes its rental charges and releases its vehicle. The original record, files and cancellation reason remain in history.</p>${payments.length ? '<p role="alert">This contract has payment records. Cancellation is blocked to preserve payment history. Check those payments first; use Return vehicle if this was a real rental.</p>' : ''}<label>Reason<textarea name="reason" required></textarea></label><footer><button type="button" class="soft-btn" data-action="close-modal">Keep assignment</button><button class="primary-add" ${payments.length ? 'disabled' : ''}>Confirm mistaken assignment</button></footer></form>`;
   }
 
   function saveAssignmentCancellation(data) {
@@ -2049,7 +2053,7 @@
     const choices = [vehicle, ...(rental.status === "closed" ? [] : db.vehicles.filter(v => v.id !== vehicle.id && v.status === "available"))];
     return `<form data-form="contract" class="record-form">${hiddenField("rentalId", rental.id)}${hiddenField("previousVehicleId", vehicle.id)}
       <div class="form-grid">
-        <div class="form-note wide"><b>${esc(rentalCode(rental))} · ${esc(rental.status)}</b><span>Save once to update this contract, the customer profile and the selected fleet vehicle. Payments and attached files stay linked. Return vehicle records the final return separately.</span></div>
+        <div class="form-note wide"><b>${esc(rentalPeriod(rental))} · ${esc(rental.status)}</b><span>Save once to update this contract, the customer profile and the selected fleet vehicle. Payments and attached files stay linked. Return vehicle records the final return separately.</span></div>
         <h3 class="wide">Customer</h3>
         ${field("Customer name", "name", customer.name, "text", true)}${field("Phone", "phone", customer.phone, "tel", true)}
         ${field("Email", "email", customer.email, "email")}${field("Address", "address", customer.address, "text")}
@@ -2254,7 +2258,7 @@
   function rentalLine(rental) {
     const vehicle = vehicleById(rental?.vehicleId);
     const customer = customerById(rental?.customerId);
-    return rental ? `${rentalCode(rental)} / ${vehicleLine(vehicle)} / ${customer?.name || "Customer"}` : "Rental";
+    return rental ? `${rentalPeriod(rental)} / ${vehicleLine(vehicle)} / ${customer?.name || "Customer"}` : "Rental";
   }
 
   function customerLine(customer) {
@@ -2333,7 +2337,7 @@
     }
     const vehicle = vehicleById(record.vehicleId);
     const customer = customerById(record.customerId);
-    return `<div class="form-note payment-context wide"><b>Payment for this rental</b><span>${esc(rentalCode(record))} / ${esc(vehicle ? vehicle.unit + " - " + vehicle.make + " " + vehicle.model : "Vehicle")} / ${esc(customer?.name || "Customer")} / balance ${money(rentalBalance(record))}</span></div>`;
+    return `<div class="form-note payment-context wide"><b>Payment for this rental</b><span>${esc(rentalPeriod(record))} / ${esc(vehicle ? vehicle.unit + " - " + vehicle.make + " " + vehicle.model : "Vehicle")} / ${esc(customer?.name || "Customer")} / balance ${money(rentalBalance(record))}</span></div>`;
   }
 
   function expenseForm() {
@@ -2766,7 +2770,7 @@
     if (data.status !== "closed") {
       const conflict = db.rentals.find((rental) => rental.vehicleId === vehicle.id && rental.status !== "closed" && rangesOverlap(data.startDate, data.endDate, rental.startDate, rental.endDate));
       if (conflict) {
-        alert(`${vehicle.unit} already has ${rentalCode(conflict)} from ${shortDate(conflict.startDate)} to ${shortDate(conflict.endDate)}.`);
+        alert(`${vehicle.unit} already has a rental from ${rentalPeriod(conflict)}.`);
         return;
       }
     }
