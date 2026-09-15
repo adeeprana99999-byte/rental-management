@@ -30,7 +30,17 @@ async function test(engine, width) {
   const save = async type => { await page.locator(`[data-form="${type}"] button.primary-add`).click(); await page.waitForTimeout(350); };
   const field = async (name, value) => page.locator(`[name="${name}"]`).fill(String(value));
   const openRental = async () => { await go('rentals'); await page.locator(`[data-action=select-rental][data-id="${saved.rentals[0].id}"]`).first().click(); };
-  await go('customers'); await page.locator('[data-action=select-customer][data-id=test-c]').click();
+  const checkDetails = async () => {
+    const box = page.locator('details.more-details').first();
+    await box.waitFor(); assert.equal(await box.getAttribute('open'), null);
+    await box.locator('summary').click(); assert.equal(await box.evaluate(el => el.open), true);
+    assert(await box.locator('.detail-grid, .customer-grid').isVisible());
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'expanded details overflow');
+    await box.locator('summary').focus(); await page.keyboard.press('Enter');
+    assert.equal(await box.evaluate(el => el.open), false);
+  };
+  await go('fleet'); await page.locator('[data-action=select-vehicle][data-id=test-v1]').first().click(); await checkDetails();
+  await go('customers'); await page.locator('[data-action=select-customer][data-id=test-c]').click(); await checkDetails();
   await page.getByRole('button', { name: 'Assign vehicle', exact: true }).click();
   await page.locator('[name=vehicleId]').selectOption('test-v1');
   for (const [name, value] of Object.entries({ startDate: '2026-09-01', endDate: '2026-10-01', monthlyRate: 600, deposit: 100, licenseExpiry: '2027-09-01', insuranceCompany: 'Test insurer', insurancePolicy: 'TESTPOLICY', insuranceExpiry: '2027-09-01' })) await field(name, value);
@@ -40,7 +50,7 @@ async function test(engine, width) {
   await page.getByRole('button', { name: 'Actions', exact: true }).click(); await page.getByRole('button', { name: 'Record payment', exact: true }).click();
   await field('amount', 100); await field('date', '2026-09-14'); await save('payment');
   assert.equal(saved.payments[0].rentalId, rentalId); assert(saved.payments[0].emailReceiptRequestedAt);
-  await openRental();
+  await openRental(); await checkDetails();
   await page.getByRole('heading', { name: 'Account summary', exact: true }).waitFor();
   await page.getByRole('heading', { name: 'Payment history', exact: true }).waitFor();
   assert.equal(await page.locator('.installment-breakdown table').count(), 3);
@@ -53,7 +63,7 @@ async function test(engine, width) {
   await page.locator('input[name=file]').setInputFiles({ name: 'test-licence.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64') }); await save('document');
   assert.equal(saved.documents[0].ownerId, rentalId);
   await page.getByRole('button', { name: 'Return vehicle', exact: true }).first().click(); await field('returnDate', '2026-09-14'); await field('returnMileage', 80); await save('return');
-  assert.equal(saved.rentals[0].status, 'closed'); assert.equal(saved.vehicles[1].status, 'available'); assert.equal(math.summary(saved.rentals[0], saved.payments).due, 280);
+  assert.equal(saved.rentals[0].status, 'closed'); await page.getByText('No upcoming installments. Unpaid balance: $280', { exact: true }).waitFor(); assert.equal(saved.vehicles[1].status, 'available'); assert.equal(math.summary(saved.rentals[0], saved.payments).due, 280);
   await go('customers'); assert.equal(await page.locator('[data-action=select-customer][data-id=test-c]').count(), 0);
   await page.getByRole('button', { name: 'Closed / archived', exact: true }).click(); await page.locator('[data-action=select-customer][data-id=test-c]').click();
   await page.getByRole('button', { name: 'Actions', exact: true }).click(); await page.getByRole('button', { name: 'Restore / delete customer', exact: true }).click(); await page.getByRole('button', { name: 'Restore to current list', exact: true }).click(); await page.waitForTimeout(350);
@@ -63,7 +73,9 @@ async function test(engine, width) {
   await go('documents'); await page.locator('footer [data-action=open-document]').first().click(); await page.waitForFunction(() => document.querySelector('.document-preview-image')?.naturalWidth > 0, null, { timeout: 5000 });
   saved.rentals.push({ ...saved.rentals[0], id: 'second-contract', status: 'active', returnDate: undefined, vehicleId: 'test-v1' }); customerMode = true;
   await go('rentals'); await page.locator('[data-portal-rental]').selectOption(rentalId); assert.equal(await page.locator('[data-form=customer-checkin]').count(), 0);
-  await page.getByRole('heading', { name: 'Payment history', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Payment history', exact: true }).waitFor(); await checkDetails();
+  await page.getByText('No payment remaining', { exact: true }).waitFor();
+  assert.equal(await page.getByText('Credit above contract', { exact: true }).count(), 0);
   assert.equal(await page.locator('.installment-breakdown table').nth(2).locator('tbody tr').count(), 2);
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'customer billing overflow');
   await page.locator('[data-portal-rental]').selectOption('second-contract'); await page.locator('[data-form=customer-checkin]').waitFor();

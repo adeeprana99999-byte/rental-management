@@ -1,4 +1,4 @@
-const CACHE_NAME = "rental-management-shell-v16-account-payment-history";
+const CACHE_NAME = "rental-management-shell-v17-simplified-profiles";
 const APP_SHELL = [
   "/",
   "/index.html",

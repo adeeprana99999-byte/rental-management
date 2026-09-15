@@ -3138,3 +3138,11 @@ button:is([data-action="edit-contract"], [data-action="edit-customer"], [data-ac
   .profile-actions, .topbar-actions { flex-wrap: wrap; }
   .profile-actions > *, .form-grid > *, .customer-info-card { min-width: 0; overflow-wrap: anywhere; }
 }
+
+/* Secondary record details stay accessible without crowding the main summary. */
+.more-details { margin: 16px 0; border: 1px solid var(--line, #dbe5e2); border-radius: 12px; min-width: 0; }
+.more-details > summary { padding: 14px 16px; min-height: 48px; cursor: pointer; font-weight: 650; color: var(--primary, #176b61); overflow-wrap: anywhere; }
+.more-details > summary:focus-visible { outline: 3px solid #c39437; outline-offset: 2px; border-radius: 10px; }
+.more-details[open] > summary { border-bottom: 1px solid var(--line, #dbe5e2); }
+.more-details > .detail-grid, .more-details > .customer-grid { margin: 0; padding: 16px; }
+.rental-state-note { padding: 10px 16px; overflow-wrap: anywhere; }

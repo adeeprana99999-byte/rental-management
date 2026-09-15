@@ -489,13 +489,6 @@
     return RentalMath.summary(rental, db.payments).due;
   }
 
-  function contractBillingDetails(rental) {
-    const billing = RentalMath.summary(rental, db.payments);
-    return detail("Monthly due date", `Start date, then day ${Number(rental.startDate?.slice(8))} each month (last day for shorter months)`)
-      + detail("Next payment", billing.nextDueDate ? `${shortDate(billing.nextDueDate)} · ${money(billing.nextAmount)}` : "No further scheduled rent payments")
-      + detail("Future rent — not due yet", money(billing.futureRent))
-      + detail("Remaining contract balance (including future rent)", money(billing.remainingBalance));
-  }
 
   function vehicleRevenue(vehicleId) {
     return db.payments
@@ -922,7 +915,9 @@
             </div>
             ${statusBadge(rental.cancelledAt ? "cancelled" : rental.status)}
           </section>
-          ${rental.settlement ? `<section class="customer-info-card"><h3>My rental balance</h3><p>Rent: ${money(rental.settlement.rentCharged)} · Contract deposit: ${money(rental.settlement.deposit)} · Received: ${money(rental.settlement.received)}</p><b>Due today: ${money(rental.settlement.due)}</b><p>Future rent (not yet due): ${money(rental.settlement.futureRent || 0)}. ${rental.settlement.nextDueDate ? `Next payment: ${shortDate(rental.settlement.nextDueDate)} · ${money(rental.settlement.nextAmount)}` : "No further scheduled rent payments."}</p><p>Credit above contract: ${money(rental.settlement.credit)}. Maintenance and business expenses are excluded. Deposit refunds are settled separately.</p>${rental.returnDate ? `<p>Returned ${shortDate(rental.returnDate)}</p>` : ""}</section>${installmentBreakdown(rental.settlement)}` : ""}
+          ${rental.returnDate ? '<p class="rental-state-note">Returned ' + esc(shortDate(rental.returnDate)) + '</p>' : ''}
+          ${rental.settlement ? installmentBreakdown(rental.settlement) : ''}
+          <details class="more-details"><summary>View more details</summary>
           <section class="customer-grid">
             <article class="customer-info-card">
               <small>Rental</small>
@@ -945,6 +940,7 @@
               <span>${rental.insuranceExpiry ? "Expires " + shortDate(rental.insuranceExpiry) : "Expiry not saved"}</span>
             </article>
           </section>
+          </details>
           <section class="two-column customer-two-column">
             <div class="panel">
               <div class="panel-head"><div><small>Update</small><h3>Miles, fuel, photo</h3></div></div>
@@ -1171,7 +1167,7 @@
   }
 
   function renderVehicleProfile(vehicle) {
-    if (ui.vehicleTab && !vehicleTabs.includes(ui.vehicleTab)) ui.vehicleTab = "";
+    if (!vehicleTabs.includes(ui.vehicleTab)) ui.vehicleTab = "info";
     const rental = activeRentalForVehicle(vehicle.id);
     const customer = rental ? customerById(rental.customerId) : null;
     const balance = rental ? rentalBalance(rental) : 0;
@@ -1217,7 +1213,7 @@
       <section class="profile-grid">
         <article class="profile-card">
           <small>Current rental</small>
-          <h3>${rental ? esc(customer?.name || "Customer") : "Available for rental"}</h3>
+          <h3>${rental ? esc(customer?.name || "Customer") : vehicle.status === "available" ? "Available for rental" : esc(tabLabel(vehicle.status))}</h3>
           <p>${rental ? `${shortDate(rental.startDate)} to ${shortDate(rental.returnDate || rental.endDate)}` : esc(vehicle.location)}</p>
         </article>
         <article class="profile-card">
@@ -1236,14 +1232,14 @@
           <p>${money(vehicle.monthlyPayment)} monthly / ${money(vehicle.acquisitionCost)} cost</p>
         </article>
       </section>
-      <section class="detail-grid">
+      <details class="more-details"><summary>View more details</summary><section class="detail-grid">
         ${detail("VIN", vehicle.vin)}
         ${detail("Plate", vehicle.plate)}
         ${detail("Color", vehicle.color)}
         ${detail("Location", vehicle.location)}
         ${detail("Insurance expiry", shortDate(vehicle.insuranceExpiry))}
         ${detail("Mileage", number(vehicle.mileage))}
-      </section>
+      </section></details>
     `;
   }
 
@@ -1388,15 +1384,12 @@
         <article class="profile-card"><small>Open balance</small><h3>${money(openBalance)}</h3><p>unpaid rental balance</p></article>
         <article class="profile-card"><small>Files</small><h3>${number(documentsFor("customer", customer.id).length)}</h3><p>customer files</p></article>
       </section>
-      <section class="detail-grid">
-        ${detail("Phone", customer.phone)}
-        ${detail("Email", customer.email || "Not saved")}
+      <details class="more-details"><summary>View more details</summary><section class="detail-grid">
         ${detail("License", customer.license)}
-        ${detail("Status", customer.status)}
         ${detail("Customer login", phoneKey(customer.phone) || "Phone not saved")}
         ${detail("Address", customer.address)}
         ${detail("Notes", customer.notes)}
-      </section>
+      </section></details>
     `;
   }
 
@@ -1547,29 +1540,25 @@
             ])}
           </div>
         </header>
-        <section class="profile-grid rental-summary-grid">
-          <article class="profile-card"><small>Contract</small><h3>${money(rentalTotal(rental))}</h3><p>${number(daysBetween(rental.startDate, rental.returnDate || rental.endDate))} days / ${money(rentalMonthlyRate(rental))} monthly plus ${money(rental.deposit)} deposit</p></article>
-          <article class="profile-card"><small>Received</small><h3>${money(rentalPaid(rental.id))}</h3><p>${number(payments.length)} payments recorded</p></article>
-          <article class="profile-card"><small>Due today</small><h3 class="${balance ? "text-danger" : "text-success"}">${money(balance)}</h3><p>${rental.returnDate ? "Final prorated balance after return." : "Only installments due by today, plus the deposit, less payments."} Maintenance is excluded.</p></article>
-          <article class="profile-card"><small>Checks</small><h3>${number(inspections.length)}</h3><p>${number(expenses.length)} linked expenses</p></article>
-        </section>
+        ${rental.returnDate ? '<p class="rental-state-note">Returned ' + esc(shortDate(rental.returnDate)) + '</p>' : ''}
+        ${rental.cancelledAt ? '<p class="rental-state-note">Cancelled: ' + esc(rental.cancellationReason || 'Assigned by mistake') + '</p>' : ''}
         ${installmentBreakdown(RentalMath.summary(rental, db.payments))}
-        <section class="detail-grid">
-          ${detail("Pickup", rental.pickupLocation)}
-          ${detail("Status", rental.returnDate ? "Returned" : rental.status)}
-          ${rental.cancelledAt ? detail("Cancellation reason", rental.cancellationReason) : ""}
-          ${detail("Actual return date", rental.returnDate || "Not returned")}${contractBillingDetails(rental)}
-          ${detail("Credit above contract", money(RentalMath.summary(rental, db.payments).credit))}
-          ${detail("Vehicle", vehicle ? vehicle.unit + " - " + vehicle.make + " " + vehicle.model : "Not assigned")}
-          ${detail("Customer", customer?.name || "Not assigned")}
-          ${detail("Phone", customer?.phone || "Not saved")}
-          ${detail("License", rental.licenseNumber || customer?.license || "Not saved")}
-          ${detail("License expiry", rental.licenseExpiry ? shortDate(rental.licenseExpiry) : "Not saved")}
-          ${detail("Insurance", rental.insuranceCompany || "Not saved")}
-          ${detail("Policy", rental.insurancePolicy || "Not saved")}
-          ${detail("Insurance expiry", rental.insuranceExpiry ? shortDate(rental.insuranceExpiry) : "Not saved")}
-          ${detail("Notes", rental.notes || "No notes")}
-        </section>
+        <details class="more-details"><summary>View more details</summary>
+          <section class="detail-grid">
+            ${detail("Pickup", rental.pickupLocation)}
+            ${detail("Monthly rent", money(rentalMonthlyRate(rental)))}
+            ${Number(rental.deposit) ? detail("Contract deposit", money(rental.deposit)) : ''}
+            ${detail("Phone", customer?.phone)}
+            ${detail("License", rental.licenseNumber || customer?.license)}
+            ${detail("License expiry", rental.licenseExpiry ? shortDate(rental.licenseExpiry) : "Not saved")}
+            ${detail("Insurance", rental.insuranceCompany)}
+            ${detail("Policy", rental.insurancePolicy)}
+            ${detail("Insurance expiry", rental.insuranceExpiry ? shortDate(rental.insuranceExpiry) : "Not saved")}
+            ${detail("Notes", rental.notes)}
+            ${detail("Inspections", number(inspections.length))}
+            ${detail("Linked expenses", number(expenses.length))}
+          </section>
+        </details>
         ${(rental.vehicleChanges || []).length ? `<section class="simple-section embedded"><h3>Vehicle change history</h3>${rental.vehicleChanges.map(change => `<p>${esc(shortDate(change.date))}: ${esc(change.fromLabel)} → ${esc(change.toLabel)}. Return mileage: ${number(change.returnMileage)}. ${esc(change.notes || "")}</p>`).join("")}</section>` : ""}
         <section class="simple-section embedded">
           <div class="simple-head"><div><h3>Rental files</h3><p>${number(documentsFor("rental", rental.id).length)} files linked to this rental</p></div><button class="soft-btn" data-action="open-add" data-type="document" data-owner-type="rental" data-owner-id="${esc(rental.id)}">Add file</button></div>
@@ -1816,10 +1805,12 @@
   }
 
   function installmentBreakdown(billing) {
-    if (!billing?.allocations?.length) return '';
+    if (!billing) return '';
     const account = table(['Account summary', 'Amount / date'], [
-      ['Total received', money(billing.received)], ['Overdue now', money(billing.overdue || 0)], ['Due today (includes overdue)', money(billing.due)],
-      ['Next installment', billing.nextDueDate ? money(billing.nextAmount) + ' due ' + esc(shortDate(billing.nextDueDate)) : 'No further scheduled payment'],
+      ['Contract total', money(billing.total)], ['Total received', money(billing.received)],
+      ...(billing.overdue > 0 ? [['Overdue now', money(billing.overdue)]] : []), ['Due today (includes overdue)', money(billing.due)],
+      ...(billing.futureRent > 0 ? [['Future rent (not yet due)', money(billing.futureRent)]] : []),
+      ['Next installment', billing.nextDueDate ? money(billing.nextAmount) + ' due ' + esc(shortDate(billing.nextDueDate)) : billing.due > 0 ? 'No upcoming installments. Unpaid balance: ' + money(billing.due) : billing.credit > 0 ? 'Fully paid. Credit: ' + money(billing.credit) : 'No payment remaining'],
       ...(billing.nextDueDate ? [['Total due by ' + esc(shortDate(billing.nextDueDate)) + ', if no further payment', money(RentalMath.round(billing.due + billing.nextAmount))]] : []),
       ...(billing.credit ? [['Credit above contract', money(billing.credit)]] : [])
     ]);
@@ -1827,7 +1818,7 @@
       payment.date ? esc(shortDate(payment.date)) : 'Date not recorded', money(payment.amount), esc([payment.method, payment.reference].filter(Boolean).join(' / ') || 'Not recorded'),
       (payment.applied || []).map(item => money(item.amount) + ' — ' + (item.kind === 'Deposit' ? 'Deposit' : esc(shortDate(item.dueDate)) + ' to ' + esc(shortDate(item.through || item.dueDate)))).concat(payment.creditApplied ? [money(payment.creditApplied) + ' — Credit above contract'] : []).join('<br>') || 'No rent allocation'
     ]), 'No payments recorded');
-    return `<section class="simple-section embedded installment-breakdown"><h3>Account summary</h3>${account}<h3>Monthly payment breakdown</h3><p>Each rental period includes both dates shown. Rent is due on the first day of that period. Payments clear the oldest unpaid rent first, even when paid late. Any contract deposit is covered first. Future installments are not due yet.</p>${table(['Rental period / due date', 'Charge', 'Payment applied', 'Remaining', 'Status'], billing.allocations.map(row => [(row.kind === 'Deposit' ? '<b>Deposit</b>' : '<b>' + esc(shortDate(row.dueDate)) + ' to ' + esc(shortDate(row.through || row.dueDate)) + '</b>') + '<br>Due ' + esc(shortDate(row.dueDate)), money(row.amount), money(row.paid), money(row.remaining), esc(row.status)]))}<p><b>Due today: ${money(billing.due)}</b> · Received: ${money(billing.received)}${billing.credit ? ' · Credit above contract: ' + money(billing.credit) : ''}</p><h3>Payment history</h3><p>Applied amounts reflect the current contract dates and charges.</p>${history}</section>`;
+    return `<section class="simple-section embedded installment-breakdown"><h3>Account summary</h3>${account}<h3>Monthly payment breakdown</h3><p>Each rental period includes both dates shown. Rent is due on the first day of that period. Payments clear the oldest unpaid rent first, even when paid late. Any contract deposit is covered first. Future installments are not due yet. Maintenance is excluded.</p>${table(['Rental period / due date', 'Charge', 'Payment applied', 'Remaining', 'Status'], (billing.allocations || []).map(row => [(row.kind === 'Deposit' ? '<b>Deposit</b>' : '<b>' + esc(shortDate(row.dueDate)) + ' to ' + esc(shortDate(row.through || row.dueDate)) + '</b>') + '<br>Due ' + esc(shortDate(row.dueDate)), money(row.amount), money(row.paid), money(row.remaining), esc(row.status)]), 'No rent installments')}<h3>Payment history</h3><p>Applied amounts reflect the current contract dates and charges.</p>${history}</section>`;
   }
 
   function table(headers, rows, emptyText) {
