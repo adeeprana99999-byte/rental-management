@@ -2,6 +2,11 @@ const assert = require('node:assert/strict');
 const { webkit, chromium } = require('playwright');
 const path = require('node:path');
 const data = { settings: { currency: 'USD' }, vehicles: [{ id:'v', unit:'TEST-001', make:'Toyota', model:'Camry', status:'rented', mileage:100 }], customers:[{id:'c',name:'Test Customer',phone:'5551234567',status:'active'}], rentals:[{id:'r',customerId:'c',vehicleId:'v',startDate:'2026-09-01',endDate:'2026-12-31',monthlyRate:1500,deposit:0,status:'active'}], payments:[{id:'p1',rentalId:'r',customerId:'c',vehicleId:'v',date:'2026-09-03',amount:600,method:'ACH',reference:'ACH-TEST'},{id:'p2',rentalId:'r',customerId:'c',vehicleId:'v',date:'2026-09-01',amount:464,method:'Card'}], expenses:[{id:'e1',vehicleId:'v',date:'2026-09-04',category:'Repair',amount:410,status:'pending',paymentMethod:'Card'},{id:'e2',vehicleId:'v',date:'2026-09-03',category:'Fuel',amount:76,status:'paid',paymentMethod:'Fleet card'},{id:'e3',vehicleId:'v',date:'2026-09-02',category:'Cleaning',amount:38,status:'paid',paymentMethod:'Fleet card'}], maintenance:[],inspections:[],documents:[],activity:[] };
+data.vehicles.push({id:'v2',unit:'TEST-002',make:'Honda',model:'Fit',status:'inactive'});
+data.customers.push({id:'c2',name:'Second Customer',status:'inactive'});
+data.rentals.push({id:'r2',vehicleId:'v2',customerId:'c2',startDate:'2026-07-01',endDate:'2026-07-31',returnDate:'2026-07-31',monthlyRate:400,status:'closed'});
+data.payments.push({id:'p3',vehicleId:'v2',customerId:'c2',rentalId:'r2',date:'2026-07-10',amount:333,method:'Cash'});
+data.expenses[2].rentalId='r';
 (async () => {
  for (const [engine,width] of [['webkit',320],['webkit',390],['chromium',1440]]) {
   const browser = await (engine === 'webkit' ? webkit.launch() : chromium.launch({executablePath:process.env.EDGE_PATH}));
@@ -17,6 +22,16 @@ const data = { settings: { currency: 'USD' }, vehicles: [{ id:'v', unit:'TEST-00
    assert.match(await page.locator('.finance-ledger').innerText(),/Received/);
    assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth+1),'page overflow');
    if(process.env.FINANCE_SCREENSHOTS) await page.screenshot({path:path.join(process.env.FINANCE_SCREENSHOTS,`finance-${width}.png`),fullPage:true});
+   await page.locator('[data-finance-vehicle]').selectOption('v');assert.equal(await page.locator('.finance-result-amount').innerText(),'$540');
+   await page.locator('[data-finance-customer]').selectOption('c');assert.equal(await page.locator('.finance-result-amount').innerText(),'$1,026');assert.equal(await page.locator('.finance-ledger tbody tr').count(),3);
+   assert.equal(await page.locator('.finance-kpis .metric').filter({hasText:'Customers owe'}).locator('b').innerText(),'$436');
+   await page.locator('[data-finance-vehicle]').selectOption('v2');assert.equal(await page.locator('.finance-result-amount').innerText(),'$0');assert.equal(await page.locator('.finance-ledger tbody tr').count(),0);
+   await page.locator('[data-finance-customer]').selectOption('c2');
+   await page.locator('[data-finance-month]').fill('2026-07');await page.locator('[data-finance-month]').press('Tab');assert.equal(await page.locator('.finance-result-amount').innerText(),'$333');
+   assert.equal(await page.locator('.finance-kpis .metric').filter({hasText:'Customers owe'}).locator('b').innerText(),'$67');
+   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'filter overflow');
+   await page.locator('[data-action=clear-finance-entities]').click();assert.equal(await page.locator('[data-finance-vehicle]').inputValue(),'');assert.equal(await page.locator('[data-finance-customer]').inputValue(),'');assert.equal(await page.locator('[data-finance-month]').inputValue(),'2026-07');
+   await page.locator('[data-finance-month]').fill('2026-09');await page.locator('[data-finance-month]').press('Tab');
    await page.locator('[data-action=finance-filter][data-filter=expense]').click();assert.equal(await page.locator('.finance-ledger tbody tr').count(),3);
    assert.equal(await page.locator('.finance-result-amount').innerText(),'$540');
    await page.locator('[data-action=finance-filter][data-filter=income]').click();assert.equal(await page.locator('.finance-ledger tbody tr').count(),2);

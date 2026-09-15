@@ -72,6 +72,8 @@
     customerTab: "info",
     documentFilter: "all",
     financeMonth: todayKey().slice(0, 7),
+    financeVehicle: "",
+    financeCustomer: "",
     financeFilter: "all"
   };
 
@@ -638,14 +640,14 @@
         date: payment.date,
         type: "income",
         label: "Rental payment",
-        party: customerById(payment.customerId)?.name || "Customer",
+        party: customerById(payment.customerId || rental?.customerId)?.name || "Customer",
         vehicle: vehicleById(payment.vehicleId)?.unit || "Vehicle",
         amount: Number(payment.amount || 0),
         method: payment.method || "",
         reference: payment.reference || "",
         rentalId: payment.rentalId,
         vehicleId: payment.vehicleId,
-        customerId: payment.customerId,
+        customerId: payment.customerId || rental?.customerId || "",
         status: "received"
       };
     });
@@ -1583,17 +1585,23 @@
   }
 
   function renderFinance() {
-    const all = financeEntries().filter(entry => !ui.financeMonth || String(entry.date || "").slice(0, 7) === ui.financeMonth);
+    const all = financeEntries().filter(entry => (!ui.financeMonth || String(entry.date || "").slice(0, 7) === ui.financeMonth) && (!ui.financeVehicle || entry.vehicleId === ui.financeVehicle) && (!ui.financeCustomer || entry.customerId === ui.financeCustomer));
     const entries = all.filter(entry => ui.financeFilter === "all" || entry.type === ui.financeFilter);
     const totals = financeTotals(all);
     const scale = Math.max(totals.income, totals.costs, 1);
     const label = ui.financeMonth ? new Date(ui.financeMonth + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 'All recorded months';
     const margin = totals.income ? Math.round(totals.net / totals.income * 100) : null;
-    const balances = db.rentals.reduce((sum, rental) => sum + rentalBalance(rental), 0);
+    const balances = db.rentals.filter(rental => (!ui.financeVehicle || rental.vehicleId === ui.financeVehicle) && (!ui.financeCustomer || rental.customerId === ui.financeCustomer)).reduce((sum, rental) => sum + rentalBalance(rental), 0);
     return `<section class="finance-dashboard">
       <section class="page-title finance-heading">
         <div><small>Owner / staff only</small><h2>Money overview</h2><p>Income, costs and what remains — in one place.</p></div>
         <div class="title-actions"><label class="finance-month">Month<input type="month" aria-label="Finance month" data-finance-month value="${esc(ui.financeMonth)}"></label><button class="primary-add" data-action="open-add" data-type="payment">+ Payment</button><button class="soft-btn" data-action="open-add" data-type="expense">+ Expense</button></div>
+      </section>
+      <section class="finance-filters panel" aria-label="Finance filters">
+        <label>Vehicle<select data-finance-vehicle aria-label="Filter by vehicle"><option value="">All vehicles</option>${db.vehicles.map(vehicle => `<option value="${esc(vehicle.id)}" ${ui.financeVehicle === vehicle.id ? 'selected' : ''}>${esc(vehicle.unit + ' · ' + vehicle.make + ' ' + vehicle.model)}${vehicle.status === 'inactive' ? ' (archived)' : ''}</option>`).join('')}</select></label>
+        <label>Customer<select data-finance-customer aria-label="Filter by customer"><option value="">All customers</option>${db.customers.map(customer => `<option value="${esc(customer.id)}" ${ui.financeCustomer === customer.id ? 'selected' : ''}>${esc(customer.name + (customer.phone ? ' · ' + customer.phone : ''))}</option>`).join('')}</select></label>
+        ${ui.financeVehicle || ui.financeCustomer ? '<button class="soft-btn" data-action="clear-finance-entities">Clear vehicle / customer</button>' : ''}
+        <p>${ui.financeCustomer ? 'Customer view includes their payments and expenses linked to their contracts. General vehicle expenses are excluded.' : 'Filter by vehicle, customer, or both. Totals and charts follow your selection.'}${ui.financeVehicle ? ' Amounts owed relate to contracts currently assigned to this vehicle; historical payments remain with the vehicle recorded at payment time.' : ''}</p>
       </section>
       <section class="finance-hero">
         <div class="finance-result"><span class="finance-eyebrow">${esc(label)}</span><h3>After all recorded costs</h3><strong class="finance-result-amount">${money(totals.net)}</strong><p>${totals.net < 0 ? 'Costs exceed income for this period.' : 'Income remaining after paid and unpaid costs.'}</p><span class="finance-margin">${margin === null ? 'No income recorded yet' : margin + '% of income remaining'}</span></div>
@@ -1603,7 +1611,7 @@
         ${metric('Received', money(totals.income), 'customer payments this period', 'green')}
         ${metric('Paid costs', money(totals.paid), 'expenses marked paid', 'amber')}
         ${metric('Unpaid costs', money(totals.pending), 'pending or reimbursable', totals.pending ? 'amber' : 'green')}
-        ${metric('Customers owe', money(balances), 'due today · across all months', 'blue')}
+        ${metric('Customers owe', money(balances), 'due today · selected records · all months', 'blue')}
       </section>
       <section class="finance-breakdown panel"><div><h3>Income vs. costs</h3><p>Maintenance is included once in costs. Customer rent balances stay separate.</p></div><div class="finance-bars">
         <div><span>Income <b>${money(totals.income)}</b></span><div class="finance-bar-track" aria-hidden="true"><i style="width:${totals.income / scale * 100}%"></i></div></div>
@@ -3254,6 +3262,7 @@
       render();
       return;
     }
+    if (action === "clear-finance-entities") { ui.financeVehicle = ""; ui.financeCustomer = ""; render(); return; }
     if (action === "finance-filter") {
       ui.financeFilter = button.dataset.filter;
       ui.actionMenu = "";
@@ -3417,6 +3426,8 @@
       return;
     }
     if (event.target.matches("[data-file-name]")) { const box = event.target.closest(".file-capture"); const file = event.target.files[0]; if (file) { box.selectedFile = file; box.querySelector(".file-status").textContent = "Selected: " + file.name + ". Save to attach."; } return; }
+    if (event.target.matches("[data-finance-vehicle]")) { ui.financeVehicle = event.target.value; render(); return; }
+    if (event.target.matches("[data-finance-customer]")) { ui.financeCustomer = event.target.value; render(); return; }
     if (event.target.matches("[data-finance-month]")) { ui.financeMonth = event.target.value; render(); return; }
     if (event.target.matches('select[name="ownerType"]')) {
       const picker = event.target.closest("form")?.querySelector(".owner-picker");
